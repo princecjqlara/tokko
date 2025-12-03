@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 
 // --- Mock Data Generators ---
 const INITIAL_TAGS = ["All", "Customers", "Leads", "VIP", "Team"];
@@ -75,6 +75,19 @@ const CalendarIcon = () => (
     </svg>
 );
 
+const PaperclipIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
+    </svg>
+);
+
+const FileIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+        <polyline points="13 2 13 9 20 9"></polyline>
+    </svg>
+);
+
 export default function BulkMessagePage() {
     const [tags, setTags] = useState(INITIAL_TAGS);
     const [selectedTag, setSelectedTag] = useState("All");
@@ -86,6 +99,8 @@ export default function BulkMessagePage() {
     const [contacts, setContacts] = useState<any[]>([]);
     const [isClient, setIsClient] = useState(false);
     const [scheduleDate, setScheduleDate] = useState("");
+    const [attachedFile, setAttachedFile] = useState<File | null>(null);
+    const fileInputRef = useRef<HTMLInputElement>(null);
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -240,6 +255,24 @@ export default function BulkMessagePage() {
             }
             return c;
         }));
+    };
+
+    const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (file) {
+            if (file.size > 25 * 1024 * 1024) { // 25MB limit
+                alert("File size exceeds 25MB limit.");
+                return;
+            }
+            setAttachedFile(file);
+        }
+    };
+
+    const handleRemoveFile = () => {
+        setAttachedFile(null);
+        if (fileInputRef.current) {
+            fileInputRef.current.value = "";
+        }
     };
 
     const isPageSelected = paginatedContacts.length > 0 && paginatedContacts.every(c => selectedContactIds.includes(c.id));
@@ -570,6 +603,25 @@ export default function BulkMessagePage() {
                                 placeholder="Type your broadcast message..."
                                 className="w-full resize-none rounded-xl bg-black/40 p-4 text-sm text-zinc-100 placeholder-zinc-600 outline-none ring-0 transition-all focus:bg-black/60 min-h-[120px]"
                             />
+
+                            {/* Attachment Preview */}
+                            {attachedFile && (
+                                <div className="absolute bottom-4 left-4 right-4 flex items-center gap-2 rounded-lg bg-white/5 p-2 border border-white/10 animate-in fade-in slide-in-from-bottom-2">
+                                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-indigo-500/20 text-indigo-400">
+                                        <FileIcon />
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-xs font-medium text-zinc-200 truncate">{attachedFile.name}</p>
+                                        <p className="text-[10px] text-zinc-500">{(attachedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                                    </div>
+                                    <button
+                                        onClick={handleRemoveFile}
+                                        className="p-1.5 hover:bg-white/10 rounded-full text-zinc-500 hover:text-red-400 transition-colors"
+                                    >
+                                        <XIcon size={14} />
+                                    </button>
+                                </div>
+                            )}
                         </div>
 
                         <div className="relative flex items-center justify-between px-4 pb-3 pt-1">
@@ -580,6 +632,23 @@ export default function BulkMessagePage() {
                                 <button className="text-[10px] font-medium text-zinc-400 hover:text-indigo-300 transition-colors bg-white/5 px-2.5 py-1.5 rounded-lg hover:bg-indigo-500/20 border border-transparent hover:border-indigo-500/30">
                                     Saved Replies
                                 </button>
+                                <div className="h-4 w-px bg-zinc-800 mx-1" />
+
+                                {/* Attach File Button */}
+                                <input
+                                    type="file"
+                                    ref={fileInputRef}
+                                    onChange={handleFileChange}
+                                    className="hidden"
+                                />
+                                <button
+                                    onClick={() => fileInputRef.current?.click()}
+                                    className="text-zinc-400 hover:text-indigo-300 transition-colors bg-white/5 p-1.5 rounded-lg hover:bg-indigo-500/20 border border-transparent hover:border-indigo-500/30"
+                                    title="Attach file (max 25MB)"
+                                >
+                                    <PaperclipIcon />
+                                </button>
+
                                 <div className="h-4 w-px bg-zinc-800 mx-1" />
                                 <div className="flex items-center gap-2 bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
                                     <CalendarIcon />
