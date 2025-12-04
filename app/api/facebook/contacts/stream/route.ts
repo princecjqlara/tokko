@@ -274,13 +274,15 @@ export async function GET(request: NextRequest) {
         };
 
         send({ type: "status", message: "Fetching pages...", progress: 0 });
+        console.log("[Stream Route] Starting to fetch pages...");
 
         // Fetch pages - try database first, fallback to Facebook API
         let pages: any[] = [];
         
         try {
-          // Try to fetch from database
-          const { data: userPages, error: dbError } = await supabaseServer
+          console.log("[Stream Route] Attempting to fetch pages from database...");
+          // Add timeout to database query (10 seconds)
+          const dbQueryPromise = supabaseServer
             .from("user_pages")
             .select(`
               page_id,
@@ -291,6 +293,15 @@ export async function GET(request: NextRequest) {
               )
             `)
             .eq("user_id", userId);
+          
+          const dbTimeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Database query timeout")), 10000)
+          );
+          
+          const { data: userPages, error: dbError } = await Promise.race([
+            dbQueryPromise,
+            dbTimeoutPromise
+          ]) as any;
 
           // If database query succeeds and has data, use it
           if (!dbError && userPages && userPages.length > 0) {
@@ -301,18 +312,20 @@ export async function GET(request: NextRequest) {
                 name: up.facebook_pages.page_name,
                 access_token: up.facebook_pages.page_access_token,
               }));
-            console.log(`Fetched ${pages.length} pages from database`);
+            console.log(`[Stream Route] Fetched ${pages.length} pages from database`);
           } else {
             // Database error or no data - fallback to Facebook API
             if (dbError) {
-              console.log("Database error, falling back to Facebook API:", dbError.message);
+              console.log("[Stream Route] Database error, falling back to Facebook API:", dbError.message || dbError);
             } else {
-              console.log("No pages in database, fetching from Facebook API...");
+              console.log("[Stream Route] No pages in database, fetching from Facebook API...");
             }
             
+            console.log("[Stream Route] Calling Facebook API to fetch pages...");
             const pagesResponse = await fetchWithRetry(
               `https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}&fields=id,name,access_token&limit=1000`
             );
+            console.log("[Stream Route] Facebook API response status:", pagesResponse.status);
 
             if (pagesResponse.ok) {
               const pagesData = await pagesResponse.json();
@@ -366,8 +379,12 @@ export async function GET(request: NextRequest) {
           }
         }
 
+        console.log(`[Stream Route] Total pages found: ${pages.length}`);
         if (pages.length === 0) {
-          send({ type: "error", message: "No pages found" });
+          console.error("[Stream Route] No pages found - cannot proceed with contact fetch");
+          send({ type: "error", message: "No pages found. Please make sure you have connected Facebook pages with messaging permissions." });
+          if (streamTimeoutId) clearTimeout(streamTimeoutId);
+          streamCompleted = true;
           controller.close();
           return;
         }
