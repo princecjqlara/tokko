@@ -720,9 +720,10 @@ export default function BulkMessagePage() {
         // Always load existing contacts from database first on mount/refresh
         // BUT skip if we're currently fetching (to avoid resetting the UI)
         const loadExistingContacts = async () => {
-            // Don't reload contacts if we're actively fetching or already loading
-            if (isFetchingRef.current || fetchingProgress.isFetching || isLoadingContactsRef.current) {
-                console.log("[Frontend] Skipping contact load - fetch in progress");
+            // STRICT: Don't reload contacts if we're actively fetching or already loading
+            // This prevents UI resets during stream processing
+            if (isFetchingRef.current || fetchingProgress.isFetching || isLoadingContactsRef.current || isConnectingRef.current) {
+                console.log("[Frontend] STRICT: Skipping contact load - fetch/connect in progress");
                 return contacts.length;
             }
             
@@ -2553,15 +2554,19 @@ export default function BulkMessagePage() {
                                                                         const pageNames = ["All Pages", ...connectedPages.map((p: any) => p.name)];
                                                                         setPages(pageNames);
                                                                         
-                                                                        // Refresh contacts
-                                                                        try {
-                                                                            const contactsResponse = await fetch("/api/facebook/contacts");
-                                                                            if (contactsResponse.ok) {
-                                                                                const contactsData = await contactsResponse.json();
-                                                                                setContacts(contactsData.contacts || []);
+                                                                        // Refresh contacts (only if not fetching)
+                                                                        if (!isFetchingRef.current && !fetchingProgress.isFetching && !isLoadingContactsRef.current) {
+                                                                            try {
+                                                                                const contactsResponse = await fetch("/api/facebook/contacts");
+                                                                                if (contactsResponse.ok) {
+                                                                                    const contactsData = await contactsResponse.json();
+                                                                                    setContacts(contactsData.contacts || []);
+                                                                                }
+                                                                            } catch (error) {
+                                                                                console.error("Error fetching contacts:", error);
                                                                             }
-                                                                        } catch (error) {
-                                                                            console.error("Error fetching contacts:", error);
+                                                                        } else {
+                                                                            console.log("[Frontend] Skipping contact refresh - fetch in progress");
                                                                         }
                                                                     } else {
                                                                         const errorData = await response.json();

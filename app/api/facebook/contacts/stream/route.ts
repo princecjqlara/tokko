@@ -10,8 +10,8 @@ export const maxDuration = 300; // 5 minutes max duration for the stream
 export async function GET(request: NextRequest) {
   console.log("[Stream Route] GET /api/facebook/contacts/stream called");
   
-  // Set a global timeout to ensure stream completes (4.5 minutes to be safe)
-  const STREAM_TIMEOUT = 270000; // 4.5 minutes
+  // Set a global timeout to ensure stream completes (10 minutes to handle large datasets)
+  const STREAM_TIMEOUT = 600000; // 10 minutes
   
   // Get optional page filter from query params
   const searchParams = request.nextUrl.searchParams;
@@ -522,9 +522,9 @@ export async function GET(request: NextRequest) {
               // Check if paused before each API call
               await waitWhilePaused();
               
-              // Add timeout to fetch request (30 seconds)
+              // Add timeout to fetch request (60 seconds for large pages)
               const fetchController = new AbortController();
-              const timeoutId = setTimeout(() => fetchController.abort(), 30000);
+              const timeoutId = setTimeout(() => fetchController.abort(), 60000);
               
               try {
                 const conversationsResponse: Response = await fetch(currentConversationsUrl, {
@@ -586,7 +586,7 @@ export async function GET(request: NextRequest) {
                   send({
                     type: "page_error",
                     pageName: page.name,
-                    error: "Request timeout (30s) - API is slow, continuing with next page..."
+                    error: "Request timeout (60s) - API is slow, continuing with next page..."
                   });
                 } else {
                   console.error(`❌ Exception fetching conversations for page ${page.name}:`, fetchError);
