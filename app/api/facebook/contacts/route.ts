@@ -605,11 +605,31 @@ export async function DELETE(request: NextRequest) {
 
     console.log(`Attempting to delete ${contactIds.length} contacts for user ${userId}`);
 
-    // Delete contacts in batches (PostgreSQL has limits on IN clause size)
+    // First, fetch the contacts to get their page_ids before deleting
     const batchSize = 1000;
+    const allPageIds = new Set<string>();
+    
+    for (let i = 0; i < contactIds.length; i += batchSize) {
+      const batch = contactIds.slice(i, i + batchSize);
+      
+      const { data: contactsToDelete, error: fetchError } = await supabaseServer
+        .from("contacts")
+        .select("page_id")
+        .eq("user_id", userId)
+        .in("contact_id", batch);
+
+      if (!fetchError && contactsToDelete) {
+        contactsToDelete.forEach((contact: any) => {
+          if (contact.page_id) {
+            allPageIds.add(contact.page_id);
+          }
+        });
+      }
+    }
+
+    // Delete contacts in batches (PostgreSQL has limits on IN clause size)
     let totalDeleted = 0;
     let errors: any[] = [];
-    const affectedPageIds = new Set<string>(); // Track which pages had contacts deleted
 
     for (let i = 0; i < contactIds.length; i += batchSize) {
       const batch = contactIds.slice(i, i + batchSize);
@@ -619,7 +639,7 @@ export async function DELETE(request: NextRequest) {
         .delete()
         .eq("user_id", userId)
         .in("contact_id", batch)
-        .select("page_id");
+        .select();
 
       if (deleteError) {
         console.error(`Error deleting batch ${i / batchSize + 1}:`, deleteError);
@@ -631,12 +651,6 @@ export async function DELETE(request: NextRequest) {
       } else {
         const deletedCount = data?.length || 0;
         totalDeleted += deletedCount;
-        // Track which pages were affected
-        data?.forEach((contact: any) => {
-          if (contact.page_id) {
-            affectedPageIds.add(contact.page_id);
-          }
-        });
         console.log(`Deleted batch ${i / batchSize + 1}: ${deletedCount} contacts`);
       }
     }
@@ -654,113 +668,80 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
-    // After deleting contacts, check if any pages now have no contacts for this user
-    // If so, delete the user_pages relationship and potentially the page itself
-    let deletedPagesCount = 0;
-    const deletedPageIds: string[] = [];
+    console.log(`Successfully deleted ${totalDeleted} contacts for user ${userId}`);
 
-    if (affectedPageIds.size > 0) {
-      console.log(`Checking ${affectedPageIds.size} affected pages for auto-deletion...`);
-      
-      for (const pageId of affectedPageIds) {
-        try {
-          // Check if user has any remaining contacts for this page
-          const { count: remainingContactsCount, error: countError } = await supabaseServer
-            .from("contacts")
-            .select("*", { count: "exact", head: true })
-            .eq("user_id", userId)
+    // Check which pages now have no contacts for this user and delete them
+    const pagesToCheck = Array.from(allPageIds);
+    const pagesToDelete: string[] = [];
+
+    for (const pageId of pagesToCheck) {
+      // Check if this page has any remaining contacts for this user
+      const { count, error: countError } = await supabaseServer
+        .from("contacts")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", userId)
+        .eq("page_id", pageId);
+
+      if (countError) {
+        console.error(`Error checking contacts for page ${pageId}:`, countError);
+        continue;
+      }
+
+      // If no contacts remain for this user on this page, mark for deletion
+      if (count === 0) {
+        pagesToDelete.push(pageId);
+        console.log(`Page ${pageId} has no contacts left for user ${userId}, will be deleted`);
+      }
+    }
+
+    // Delete user_pages relationships for pages with no contacts
+    if (pagesToDelete.length > 0) {
+      const { error: userPagesDeleteError } = await supabaseServer
+        .from("user_pages")
+        .delete()
+        .eq("user_id", userId)
+        .in("page_id", pagesToDelete);
+
+      if (userPagesDeleteError) {
+        console.error("Error deleting user_pages relationships:", userPagesDeleteError);
+      } else {
+        console.log(`Deleted ${pagesToDelete.length} user_pages relationships for empty pages`);
+      }
+
+      // Check if any of these pages have no users left, and delete from facebook_pages
+      for (const pageId of pagesToDelete) {
+        const { count: userCount, error: userCountError } = await supabaseServer
+          .from("user_pages")
+          .select("*", { count: "exact", head: true })
+          .eq("page_id", pageId);
+
+        if (userCountError) {
+          console.error(`Error checking users for page ${pageId}:`, userCountError);
+          continue;
+        }
+
+        // If no users left for this page, delete from facebook_pages
+        if (userCount === 0) {
+          const { error: pageDeleteError } = await supabaseServer
+            .from("facebook_pages")
+            .delete()
             .eq("page_id", pageId);
 
-          if (countError) {
-            console.error(`Error checking remaining contacts for page ${pageId}:`, countError);
-            continue;
-          }
-
-          // If no remaining contacts for this user, delete the user_pages relationship
-          if (remainingContactsCount === 0) {
-            console.log(`No remaining contacts for page ${pageId}, deleting user-page relationship...`);
-            
-            // Delete user_pages relationship
-            const { error: userPageDeleteError } = await supabaseServer
-              .from("user_pages")
-              .delete()
-              .eq("user_id", userId)
-              .eq("page_id", pageId);
-
-            if (userPageDeleteError) {
-              console.error(`Error deleting user_pages relationship for page ${pageId}:`, userPageDeleteError);
-              continue;
-            }
-
-            console.log(`Deleted user_pages relationship for page ${pageId}`);
-
-            // Check if any other users still have contacts for this page
-            const { count: otherUsersContactsCount, error: otherUsersCountError } = await supabaseServer
-              .from("contacts")
-              .select("*", { count: "exact", head: true })
-              .eq("page_id", pageId);
-
-            if (otherUsersCountError) {
-              console.error(`Error checking other users' contacts for page ${pageId}:`, otherUsersCountError);
-              continue;
-            }
-
-            // If no other users have contacts for this page, delete the page itself
-            if (otherUsersContactsCount === 0) {
-              console.log(`No other users have contacts for page ${pageId}, deleting page...`);
-              
-              // Check if any other users still have user_pages relationship
-              const { count: otherUsersPagesCount, error: otherUsersPagesCountError } = await supabaseServer
-                .from("user_pages")
-                .select("*", { count: "exact", head: true })
-                .eq("page_id", pageId);
-
-              if (otherUsersPagesCountError) {
-                console.error(`Error checking other users' page relationships for page ${pageId}:`, otherUsersPagesCountError);
-                continue;
-              }
-
-              // Only delete the page if no other users have a relationship with it
-              if (otherUsersPagesCount === 0) {
-                const { error: pageDeleteError } = await supabaseServer
-                  .from("facebook_pages")
-                  .delete()
-                  .eq("page_id", pageId);
-
-                if (pageDeleteError) {
-                  console.error(`Error deleting facebook_pages entry for page ${pageId}:`, pageDeleteError);
-                } else {
-                  deletedPagesCount++;
-                  deletedPageIds.push(pageId);
-                  console.log(`Successfully deleted page ${pageId} (no contacts or relationships remaining)`);
-                }
-              } else {
-                console.log(`Page ${pageId} still has ${otherUsersPagesCount} other user relationships, keeping page`);
-              }
-            } else {
-              console.log(`Page ${pageId} still has ${otherUsersContactsCount} contacts from other users, keeping page`);
-            }
+          if (pageDeleteError) {
+            console.error(`Error deleting page ${pageId} from facebook_pages:`, pageDeleteError);
           } else {
-            console.log(`Page ${pageId} still has ${remainingContactsCount} contacts for this user, keeping user-page relationship`);
+            console.log(`Deleted page ${pageId} from facebook_pages (no users left)`);
           }
-        } catch (pageCheckError: any) {
-          console.error(`Error processing page ${pageId} for auto-deletion:`, pageCheckError);
-          // Continue with other pages
         }
       }
     }
 
-    console.log(`Successfully deleted ${totalDeleted} contacts for user ${userId}`);
-    if (deletedPagesCount > 0) {
-      console.log(`Auto-deleted ${deletedPagesCount} pages with no remaining contacts: ${deletedPageIds.join(", ")}`);
-    }
-    
     return NextResponse.json({ 
       success: true,
       deletedCount: totalDeleted,
       requestedCount: contactIds.length,
-      deletedPagesCount: deletedPagesCount,
-      deletedPageIds: deletedPageIds
+      pagesDeleted: pagesToDelete.length,
+      pagesDeletedIds: pagesToDelete
     });
   } catch (error: any) {
     console.error("Error deleting contacts:", error);
