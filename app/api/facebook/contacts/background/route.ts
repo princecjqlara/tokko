@@ -30,7 +30,7 @@ export async function GET(request: NextRequest) {
 
     return NextResponse.json({
       job: job || null,
-      status: job?.status || "none",
+      status: (job as any)?.status || "none",
     });
   } catch (error: any) {
     console.error("Error in background fetch GET:", error);
@@ -62,8 +62,9 @@ export async function POST(request: NextRequest) {
       .limit(1)
       .maybeSingle();
 
-    if (existingJob) {
-      if (existingJob.status === "paused") {
+    const job = existingJob as any;
+    if (job) {
+      if (job.status === "paused") {
         // Resume the paused job
         await supabaseServer
           .from("fetch_jobs")
@@ -72,18 +73,18 @@ export async function POST(request: NextRequest) {
             is_paused: false,
             updated_at: new Date().toISOString(),
           })
-          .eq("id", existingJob.id);
+          .eq("id", job.id);
         
         return NextResponse.json({
           success: true,
           message: "Resumed existing job",
-          jobId: existingJob.id,
+          jobId: job.id,
         });
       } else {
         return NextResponse.json({
           success: false,
           message: "Job already running or pending",
-          jobId: existingJob.id,
+          jobId: job.id,
         });
       }
     }

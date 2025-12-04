@@ -1,48 +1,55 @@
 import NextAuth, { NextAuthOptions } from "next-auth";
 import FacebookProvider from "next-auth/providers/facebook";
 
-// Validate required environment variables
-if (!process.env.NEXTAUTH_SECRET) {
-  throw new Error("NEXTAUTH_SECRET is not set. Please create a .env.local file with NEXTAUTH_SECRET.");
-}
+// Validate required environment variables (only throw at runtime, not during build)
+const getAuthConfig = () => {
+  if (!process.env.NEXTAUTH_SECRET) {
+    throw new Error("NEXTAUTH_SECRET is not set. Please set this in Vercel environment variables.");
+  }
 
-const providers = [];
+  const providers = [];
 
-// Only add Facebook provider if credentials are provided
-if (
-  process.env.FACEBOOK_CLIENT_ID &&
-  process.env.FACEBOOK_CLIENT_SECRET &&
-  process.env.FACEBOOK_CLIENT_ID !== "your-facebook-app-id" &&
-  process.env.FACEBOOK_CLIENT_SECRET !== "your-facebook-app-secret"
-) {
-  providers.push(
-    FacebookProvider({
-      clientId: process.env.FACEBOOK_CLIENT_ID,
-      clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
-      // Note: For Business type apps, at least one permission beyond email/public_profile is required
-      // Permissions needed: pages_show_list (list pages), pages_read_engagement (read messages), pages_messaging (send messages), business_management (access business accounts)
-      authorization: {
-        params: {
-          scope: "email public_profile pages_show_list pages_read_engagement pages_messaging business_management",
+  // Only add Facebook provider if credentials are provided
+  if (
+    process.env.FACEBOOK_CLIENT_ID &&
+    process.env.FACEBOOK_CLIENT_SECRET &&
+    process.env.FACEBOOK_CLIENT_ID !== "your-facebook-app-id" &&
+    process.env.FACEBOOK_CLIENT_SECRET !== "your-facebook-app-secret"
+  ) {
+    providers.push(
+      FacebookProvider({
+        clientId: process.env.FACEBOOK_CLIENT_ID,
+        clientSecret: process.env.FACEBOOK_CLIENT_SECRET,
+        // Note: For Business type apps, at least one permission beyond email/public_profile is required
+        // Permissions needed: pages_show_list (list pages), pages_read_engagement (read messages), pages_messaging (send messages), business_management (access business accounts)
+        authorization: {
+          params: {
+            scope: "email public_profile pages_show_list pages_read_engagement pages_messaging business_management",
+          },
         },
-      },
-    })
-  );
-}
+      })
+    );
+  }
 
-// Ensure we have at least one provider before creating NextAuth instance
-if (providers.length === 0) {
-  throw new Error(
-    "No authentication providers configured. Please set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET in .env.local"
-  );
-}
+  // Ensure we have at least one provider before creating NextAuth instance
+  if (providers.length === 0) {
+    throw new Error(
+      "No authentication providers configured. Please set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET in Vercel environment variables."
+    );
+  }
 
-export const authOptions: NextAuthOptions = {
-  secret: process.env.NEXTAUTH_SECRET,
-  providers,
-  pages: {
-    signIn: "/auth/signin",
-  },
+  return { providers, secret: process.env.NEXTAUTH_SECRET };
+};
+
+// Lazy-load auth config to avoid build-time errors
+const getAuthOptions = (): NextAuthOptions => {
+  const config = getAuthConfig();
+  return {
+    secret: config.secret,
+    providers: config.providers,
+    pages: {
+      signIn: "/auth/signin",
+    },
   // Development mode settings
   debug: process.env.NODE_ENV === "development",
   useSecureCookies: process.env.NODE_ENV === "production",
@@ -153,9 +160,39 @@ export const authOptions: NextAuthOptions = {
       return session;
     },
   },
+  };
 };
 
+// Export authOptions for use in other files
+// This will be evaluated when imported, but errors will only occur at runtime when actually used
+export const authOptions: NextAuthOptions = (() => {
+  try {
+    return getAuthOptions();
+  } catch (error) {
+    // During build, env vars might not be set - return a minimal config
+    // The actual error will occur at runtime when the handler is called
+    if (process.env.NODE_ENV === 'production' && !process.env.NEXTAUTH_SECRET) {
+      // Return a placeholder that will fail gracefully at runtime
+      return {
+        secret: 'placeholder-secret-will-fail-at-runtime',
+        providers: [],
+        pages: { signIn: "/auth/signin" },
+        debug: false,
+        useSecureCookies: true,
+        session: { strategy: "jwt", maxAge: 60 * 60 * 24 * 60 },
+        callbacks: {
+          async jwt() { throw new Error("NEXTAUTH_SECRET is not set. Please set this in Vercel environment variables."); },
+          async session() { throw new Error("NEXTAUTH_SECRET is not set. Please set this in Vercel environment variables."); },
+        },
+      } as NextAuthOptions;
+    }
+    throw error;
+  }
+})();
+
+// Create handler - will use authOptions which is now safe to evaluate
 const handler = NextAuth(authOptions);
 
-export { handler as GET, handler as POST };
+export const GET = handler;
+export const POST = handler;
 
