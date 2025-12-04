@@ -10,15 +10,42 @@ export const maxDuration = 300; // 5 minutes max duration for the stream
 export async function GET(request: NextRequest) {
   console.log("[Stream Route] GET /api/facebook/contacts/stream called");
   
+  // Set a global timeout to ensure stream completes (4.5 minutes to be safe)
+  const STREAM_TIMEOUT = 270000; // 4.5 minutes
+  
   // Get optional page filter from query params
   const searchParams = request.nextUrl.searchParams;
   const filterPageId = searchParams.get("pageId"); // Optional: filter by specific page ID
   
   try {
     const encoder = new TextEncoder();
+    let streamCompleted = false;
+    let streamTimeoutId: NodeJS.Timeout | null = null;
+    // Declare userId and accessToken at outer scope for error handler access
+    let userId: string | undefined;
+    let accessToken: string | undefined;
+    
     const stream = new ReadableStream({
       async start(controller) {
         console.log("[Stream Route] Stream started, initializing...");
+        
+        // Set timeout to force completion
+        streamTimeoutId = setTimeout(() => {
+          if (!streamCompleted) {
+            console.warn("⚠️ [Stream Route] Stream timeout reached, forcing completion...");
+            streamCompleted = true;
+            try {
+              send({ 
+                type: "error", 
+                message: "Stream timeout - fetch taking too long. Please try syncing again with fewer pages." 
+              });
+              controller.close();
+            } catch (err) {
+              console.error("Error in timeout handler:", err);
+            }
+          }
+        }, STREAM_TIMEOUT);
+        
         const send = (data: any) => {
           try {
             // Check if controller is still open before sending
@@ -45,12 +72,14 @@ export async function GET(request: NextRequest) {
         
         if (!session || !(session as any).accessToken) {
           send({ type: "error", message: "Unauthorized" });
+          if (streamTimeoutId) clearTimeout(streamTimeoutId);
+          streamCompleted = true;
           controller.close();
           return;
         }
 
-        const userId = (session.user as any).id;
-        const accessToken = (session as any).accessToken;
+        userId = (session.user as any).id;
+        accessToken = (session as any).accessToken;
         
         // Helper function to check if job is paused
         const checkIfPaused = async (): Promise<boolean> => {
@@ -916,39 +945,105 @@ export async function GET(request: NextRequest) {
           }
         }
 
+        // Clear timeout since we're completing normally
+        if (streamTimeoutId) {
+          clearTimeout(streamTimeoutId);
+          streamTimeoutId = null;
+        }
+        
         // Update job to completed with total count including existing
         const finalTotalContacts = existingContactCount + allContacts.length;
-        await updateJobStatus({
-          status: "completed",
-          is_paused: false,
-          total_contacts: finalTotalContacts,
-          total_pages: pages.length,
-          message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
-          completed_at: new Date().toISOString()
-        });
-
-        send({
-          type: "complete",
-          totalContacts: finalTotalContacts,
-          totalPages: pages.length,
-          message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
-          newContactsCount: allContacts.length
-        });
         
-        console.log(`✅ [Stream Route] Completed fetch: ${allContacts.length} new contacts, ${finalTotalContacts} total contacts`);
+        try {
+          await updateJobStatus({
+            status: "completed",
+            is_paused: false,
+            total_contacts: finalTotalContacts,
+            total_pages: pages.length,
+            message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
+            completed_at: new Date().toISOString()
+          });
+          console.log(`✅ [Stream Route] Job status updated to completed`);
+        } catch (statusError) {
+          console.error("❌ [Stream Route] Error updating job status to completed:", statusError);
+        }
 
+        try {
+          send({
+            type: "complete",
+            totalContacts: finalTotalContacts,
+            totalPages: pages.length,
+            message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
+            newContactsCount: allContacts.length
+          });
+          console.log(`✅ [Stream Route] Completion event sent`);
+        } catch (sendError) {
+          console.error("❌ [Stream Route] Error sending completion event:", sendError);
+        }
+        
+        console.log(`✅ [Stream Route] Completed fetch: ${allContacts.length} new contacts, ${finalTotalContacts} total contacts from ${pages.length} pages`);
+        
+        // Mark as completed
+        streamCompleted = true;
+
+        // Always close the controller at the end
+        console.log(`✅ [Stream Route] Stream processing complete. Closing stream...`);
+        try {
           controller.close();
+          console.log(`✅ [Stream Route] Stream closed successfully`);
+        } catch (closeError) {
+          console.error("❌ [Stream Route] Error closing controller:", closeError);
+        }
         } catch (error: any) {
-          console.error("Stream error:", error);
+          // Clear timeout on error
+          if (streamTimeoutId) {
+            clearTimeout(streamTimeoutId);
+            streamTimeoutId = null;
+          }
+          
+          console.error("❌ [Stream Route] Stream error:", error);
+          console.error("❌ [Stream Route] Error stack:", error?.stack);
+          
+          // Mark as completed to prevent timeout handler from running
+          streamCompleted = true;
+          
+          // Try to send error message
           try {
             send({ type: "error", message: error.message || "Internal server error" });
           } catch (sendError) {
-            console.error("Error sending error message:", sendError);
+            console.error("❌ [Stream Route] Error sending error message:", sendError);
           }
+          
+          // Update job status to failed (directly since we might be outside updateJobStatus scope)
+          if (userId) {
+            try {
+              const { error: statusError } = await supabaseServer
+                .from("fetch_jobs")
+                .update({
+                  status: "failed",
+                  is_paused: false,
+                  error: error.message || "Unknown error",
+                  message: `Fetch failed: ${error.message || "Unknown error"}`,
+                  updated_at: new Date().toISOString(),
+                })
+                .eq("user_id", userId)
+                .in("status", ["running", "paused", "pending"]);
+              
+              if (statusError) {
+                console.error("❌ [Stream Route] Error updating job status to failed:", statusError);
+              } else {
+                console.log("✅ [Stream Route] Job status updated to failed");
+              }
+            } catch (updateError) {
+              console.error("❌ [Stream Route] Exception updating job status:", updateError);
+            }
+          }
+          
+          // Always try to close controller
           try {
             controller.close();
           } catch (closeError) {
-            console.error("Error closing controller:", closeError);
+            console.error("❌ [Stream Route] Error closing controller:", closeError);
           }
         }
       },
