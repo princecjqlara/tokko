@@ -13,3 +13,4 @@ const nextConfig: NextConfig = {
 
 export default nextConfig;
 // Trigger redeploy after connecting correct repo
+// Redeploy after connecting to correct repository - Thu Dec  4 17:26:16 MPST 2025
