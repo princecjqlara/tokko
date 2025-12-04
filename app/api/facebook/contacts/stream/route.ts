@@ -711,7 +711,7 @@ export async function GET(request: NextRequest) {
                       // Continue even if save fails
                     }
                     
-                    // Update job status periodically
+                    // Update job status periodically - use existing count + new contacts only
                     const totalContacts = existingContactCount + allContacts.length;
                     if (allContacts.length % 50 === 0) {
                       await updateJobStatus({
@@ -721,11 +721,12 @@ export async function GET(request: NextRequest) {
                         current_page_number: processedPages,
                         total_pages: pages.length,
                         total_contacts: totalContacts,
-                        message: `Processed ${totalContacts} total contacts from ${processedPages} pages...`
+                        message: `Found ${allContacts.length} new/updated contacts (${existingContactCount} existing)...`
                       });
                     }
                     
                     // Send contact immediately with total count including existing
+                    // Only send if it's a new contact or has updates
                     // Don't include currentPage in contact events - page info is only sent on page_start/page_complete
                     send({
                       type: "contact",
@@ -739,7 +740,7 @@ export async function GET(request: NextRequest) {
                     if (allContacts.length % 50 === 0) {
                       send({
                         type: "status",
-                        message: `Processed ${totalContacts} total contacts from ${processedPages} pages...`,
+                        message: `Found ${allContacts.length} new/updated contacts (${existingContactCount} existing)...`,
                         totalContacts: totalContacts,
                         currentPage: processedPages,
                         totalPages: pages.length
@@ -751,7 +752,7 @@ export async function GET(request: NextRequest) {
                         currentPage: processedPages,
                         totalPages: pages.length,
                         totalContacts: totalContacts,
-                        message: `Processing ${page.name}... ${allContacts.length} contacts so far`
+                        message: `Processing ${page.name}... ${allContacts.length} new contacts so far`
                       });
                     }
                   }
@@ -760,19 +761,9 @@ export async function GET(request: NextRequest) {
             }
 
             if (pageContacts > 0) {
-              console.log(`   ✅ Page ${page.name}: Added ${pageContacts} contacts`);
+              console.log(`   ✅ Page ${page.name}: Added ${pageContacts} new contacts (${allConversations.length} conversations processed)`);
             } else {
-              console.log(`   ⚠️ Page ${page.name}: No contacts extracted from ${allConversations.length} conversations`);
-              if (allConversations.length > 0) {
-                // Log details about why no contacts were extracted
-                const sampleConv = allConversations[0];
-                console.log(`   🔍 Debug: First conversation sample:`, {
-                  hasParticipants: !!sampleConv.participants,
-                  participants: sampleConv.participants?.data || [],
-                  pageId: page.id,
-                  participantIds: (sampleConv.participants?.data || []).map((p: any) => p.id)
-                });
-              }
+              console.log(`   ⏭️ Page ${page.name}: No new contacts (${allConversations.length} conversations, all already processed)`);
             }
             
             const totalContacts = existingContactCount + allContacts.length;
@@ -783,7 +774,7 @@ export async function GET(request: NextRequest) {
               totalContacts: totalContacts,
               currentPage: processedPages,
               totalPages: pages.length,
-              message: `✓ Completed ${page.name}: ${pageContacts} contacts (Total: ${totalContacts})`
+              message: `✓ Completed ${page.name}: ${pageContacts} new contacts (${totalContacts} total)`
             });
           } catch (pageError: any) {
             console.error(`❌ Error processing page ${page.name}:`, pageError);
