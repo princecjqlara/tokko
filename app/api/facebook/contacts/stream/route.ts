@@ -620,7 +620,7 @@ export async function GET(request: NextRequest) {
                     // Page info is only updated on page_start and page_complete events
                   });
                   
-                  // Send progress update every 50 contacts to keep UI responsive
+                  // Send progress update every 50 contacts to keep UI responsive and update progress bar
                   if (allContacts.length % 50 === 0) {
                     send({
                       type: "status",
@@ -628,6 +628,15 @@ export async function GET(request: NextRequest) {
                       totalContacts: totalContacts,
                       currentPage: processedPages,
                       totalPages: pages.length
+                    });
+                    // Also send a page_start-like event to update progress bar without changing page name
+                    send({
+                      type: "page_progress",
+                      pageName: page.name,
+                      currentPage: processedPages,
+                      totalPages: pages.length,
+                      totalContacts: totalContacts,
+                      message: `Processing ${page.name}... ${allContacts.length} contacts so far`
                     });
                   }
                 }

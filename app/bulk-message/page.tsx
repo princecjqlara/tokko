@@ -82,6 +82,35 @@ const PaperclipIcon = () => (
 );
 
 const FileIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
+        <polyline points="13 2 13 9 20 9"></polyline>
+    </svg>
+);
+
+const VideoIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polygon points="23 7 16 12 23 17 23 7"></polygon>
+        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
+    </svg>
+);
+
+const AudioIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
+        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+    </svg>
+);
+
+const ImageIcon = () => (
+    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
+        <circle cx="8.5" cy="8.5" r="1.5"></circle>
+        <polyline points="21 15 16 10 5 21"></polyline>
+    </svg>
+);
+
+const OldFileIcon = () => (
     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
         <polyline points="13 2 13 9 20 9"></polyline>
@@ -1176,10 +1205,26 @@ export default function BulkMessagePage() {
                 return;
             }
             
-            // Validate file type (only images)
-            const validImageTypes = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"];
-            if (!validImageTypes.includes(file.type)) {
-                alert("Only image files are allowed (JPEG, PNG, GIF, WebP).");
+            // Validate file type (images, videos, audio, and common document types)
+            const validMediaTypes = [
+                // Images
+                "image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp",
+                // Videos
+                "video/mp4", "video/quicktime", "video/x-msvideo", "video/x-ms-wmv", "video/webm",
+                // Audio
+                "audio/mpeg", "audio/mp3", "audio/wav", "audio/ogg", "audio/webm",
+                // Documents
+                "application/pdf",
+                "application/msword",
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document", // .docx
+                "application/vnd.ms-excel",
+                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", // .xlsx
+                "application/vnd.ms-powerpoint",
+                "application/vnd.openxmlformats-officedocument.presentationml.presentation" // .pptx
+            ];
+            
+            if (!validMediaTypes.includes(file.type)) {
+                alert("Unsupported file type. Please use images, videos, audio, or documents (PDF, DOC, XLS, PPT).");
                 if (fileInputRef.current) {
                     fileInputRef.current.value = "";
                 }
@@ -1231,10 +1276,10 @@ export default function BulkMessagePage() {
                         throw new Error(uploadData.error || "Failed to upload file");
                     }
 
-                    // Set attachment with the uploaded URL
+                    // Set attachment with the uploaded URL and detected type
                     attachment = {
                         url: uploadData.url,
-                        type: "image"
+                        type: uploadData.type || "file" // Type is determined by the upload API
                     };
                 } catch (uploadError: any) {
                     console.error("Error uploading file:", uploadError);
@@ -1975,7 +2020,7 @@ export default function BulkMessagePage() {
                                     type="file"
                                     ref={fileInputRef}
                                     onChange={handleFileChange}
-                                    accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
+                                    accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx"
                                     className="hidden"
                                 />
                                 <button
