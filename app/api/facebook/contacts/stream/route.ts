@@ -666,11 +666,18 @@ export async function GET(request: NextRequest) {
               if (processedCount % BATCH_SIZE === 0) {
                 await waitWhilePaused();
                 const elapsed = ((Date.now() - processingStartTime) / 1000).toFixed(1);
-                console.log(`   💓 [Stream Route] Heartbeat: Processed ${processedCount}/${allConversations.length} conversations for ${page.name} (${elapsed}s elapsed, ${allContacts.length} contacts found)`);
-                // Send progress update every batch
+                const currentTotal = existingContactCount + allContacts.length;
+                const safeCurrentTotal = Math.max(currentTotal, lastSentContactCount);
+                lastSentContactCount = safeCurrentTotal;
+                
+                console.log(`   💓 [Stream Route] Heartbeat: Processed ${processedCount}/${allConversations.length} conversations for ${page.name} (${elapsed}s elapsed, ${safeCurrentTotal} total contacts)`);
+                // Send heartbeat/progress update - always show cumulative total
                 send({
                   type: "status",
-                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`,
+                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeCurrentTotal} total contacts (${allContacts.length} new)...`,
+                  totalContacts: safeCurrentTotal,
+                  currentPage: processedPages,
+                  totalPages: pages.length,
                   progress: Math.round((processedCount / allConversations.length) * 100),
                 });
               }
@@ -800,10 +807,11 @@ export async function GET(request: NextRequest) {
                   });
                   
                   // Send progress update every contact for real-time feel (but throttle to every 5 contacts to avoid spam)
+                  // Always show cumulative total across all pages, not per-page count
                   if (allContacts.length % 5 === 0) {
                     send({
                       type: "status",
-                      message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`,
+                      message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
                       totalContacts: safeTotalContacts,
                       currentPage: processedPages,
                       totalPages: pages.length,
@@ -821,59 +829,63 @@ export async function GET(request: NextRequest) {
               }
               
               // Batch save contacts to database every BATCH_SAVE_SIZE contacts or at the end
+              // Make it non-blocking to prevent stream from appearing stuck
               if (contactsToSave.length >= BATCH_SAVE_SIZE || (i === allConversations.length - 1 && contactsToSave.length > 0)) {
                 const batchToSave = contactsToSave.splice(0, BATCH_SAVE_SIZE); // Remove from buffer
                 
                 if (batchToSave.length > 0) {
-                  try {
-                    const contactsToUpsert = batchToSave.map((contactData: any) => ({
-                      contact_id: contactData.id,
-                      page_id: contactData.pageId,
-                      user_id: userId,
-                      contact_name: contactData.name,
-                      page_name: contactData.page,
-                      last_message: contactData.lastMessage || null,
-                      last_message_time: contactData.lastMessageTime || null,
-                      last_contact_message_date: contactData.lastContactMessageDate || null,
-                      updated_at: contactData.updatedTime || new Date().toISOString(),
-                      tags: contactData.tags || [],
-                      role: contactData.role || "",
-                      avatar: contactData.avatar,
-                      date: contactData.date || null,
-                    }));
-                    
-                    const dbBatchSavePromise = supabaseServer
-                      .from("contacts")
-                      .upsert(contactsToUpsert, {
-                        onConflict: "contact_id,page_id,user_id"
-                      });
-                    
-                    const saveTimeoutPromise = new Promise((_, reject) => 
-                      setTimeout(() => reject(new Error("Database batch save timeout")), 30000) // 30s for batch
-                    );
-                    
+                  // Fire and forget - don't block the stream
+                  (async () => {
                     try {
-                      await Promise.race([
-                        dbBatchSavePromise,
-                        saveTimeoutPromise
-                      ]);
-                      console.log(`   💾 Batch saved ${batchToSave.length} contacts to database (${allContacts.length} total so far)`);
-                    } catch (batchError: any) {
-                      if (batchError.message?.includes("timeout")) {
-                        console.warn(`⏱️ Database batch save timeout, ${batchToSave.length} contacts may not be saved`);
-                      } else {
-                        console.error(`❌ Error batch saving contacts:`, batchError);
+                      const contactsToUpsert = batchToSave.map((contactData: any) => ({
+                        contact_id: contactData.id,
+                        page_id: contactData.pageId,
+                        user_id: userId,
+                        contact_name: contactData.name,
+                        page_name: contactData.page,
+                        last_message: contactData.lastMessage || null,
+                        last_message_time: contactData.lastMessageTime || null,
+                        last_contact_message_date: contactData.lastContactMessageDate || null,
+                        updated_at: contactData.updatedTime || new Date().toISOString(),
+                        tags: contactData.tags || [],
+                        role: contactData.role || "",
+                        avatar: contactData.avatar,
+                        date: contactData.date || null,
+                      }));
+                      
+                      const dbBatchSavePromise = supabaseServer
+                        .from("contacts")
+                        .upsert(contactsToUpsert, {
+                          onConflict: "contact_id,page_id,user_id"
+                        });
+                      
+                      const saveTimeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error("Database batch save timeout")), 30000) // 30s for batch
+                      );
+                      
+                      try {
+                        await Promise.race([
+                          dbBatchSavePromise,
+                          saveTimeoutPromise
+                        ]);
+                        console.log(`   💾 Batch saved ${batchToSave.length} contacts to database (${allContacts.length} total so far)`);
+                      } catch (batchError: any) {
+                        if (batchError.message?.includes("timeout")) {
+                          console.warn(`⏱️ Database batch save timeout, ${batchToSave.length} contacts may not be saved`);
+                        } else {
+                          console.error(`❌ Error batch saving contacts:`, batchError);
+                        }
                       }
+                    } catch (batchError: any) {
+                      console.error(`❌ Exception batch saving contacts:`, batchError);
                     }
-                  } catch (batchError: any) {
-                    console.error(`❌ Exception batch saving contacts:`, batchError);
-                  }
+                  })();
                 }
               }
               
               // Update job status and send progress updates more frequently (every PROGRESS_UPDATE_INTERVAL)
               const totalContacts = existingContactCount + allContacts.length;
-              // Ensure count never decreases
+              // Ensure count never decreases - always use cumulative total across all pages
               const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
               lastSentContactCount = safeTotalContacts;
               
@@ -886,14 +898,15 @@ export async function GET(request: NextRequest) {
                   current_page_number: processedPages,
                   total_pages: pages.length,
                   total_contacts: safeTotalContacts,
-                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`
+                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new)...`
                 }).catch((statusError) => {
                   console.warn(`⚠️ Could not update job status:`, statusError);
                 });
                 
+                // Send heartbeat/progress update - always show cumulative total, not per-page
                 send({
                   type: "status",
-                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts...`,
+                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
                   totalContacts: safeTotalContacts,
                   currentPage: processedPages,
                   totalPages: pages.length,
