@@ -1140,8 +1140,8 @@ export default function BulkMessagePage() {
 
     // Select All (all filtered contacts)
     const selectAllFiltered = () => {
-        const allIds = filteredContacts.map(c => c.id);
-        setSelectedContactIds(allIds);
+        const allIds = filteredContacts.map(c => c.id || c.contact_id || c.contactId);
+        setSelectedContactIds(allIds.filter(id => id !== undefined && id !== null));
     };
 
     const clearSelection = () => {
@@ -1298,10 +1298,28 @@ export default function BulkMessagePage() {
                         body: uploadFormData,
                     });
 
-                    const uploadData = await uploadResponse.json();
+                    // Check if response has content before parsing
+                    const contentType = uploadResponse.headers.get("content-type");
+                    let uploadData;
+                    
+                    if (contentType && contentType.includes("application/json")) {
+                        const text = await uploadResponse.text();
+                        if (!text || text.trim() === "") {
+                            throw new Error("Empty response from server");
+                        }
+                        try {
+                            uploadData = JSON.parse(text);
+                        } catch (parseError) {
+                            console.error("Failed to parse JSON response:", text);
+                            throw new Error(`Server returned invalid response: ${text.substring(0, 100)}`);
+                        }
+                    } else {
+                        const text = await uploadResponse.text();
+                        throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}`);
+                    }
 
                     if (!uploadResponse.ok || !uploadData.success) {
-                        throw new Error(uploadData.error || "Failed to upload file");
+                        throw new Error(uploadData.error || uploadData.details || "Failed to upload file");
                     }
 
                     // Set attachment with the uploaded URL and detected type
@@ -1354,8 +1372,14 @@ export default function BulkMessagePage() {
         }
     };
 
-    const isPageSelected = paginatedContacts.length > 0 && paginatedContacts.every(c => selectedContactIds.includes(c.id));
-    const isAllFilteredSelected = filteredContacts.length > 0 && filteredContacts.every(c => selectedContactIds.includes(c.id));
+    const isPageSelected = paginatedContacts.length > 0 && paginatedContacts.every(c => {
+        const contactId = c.id || c.contact_id || c.contactId;
+        return contactId && selectedContactIds.includes(contactId);
+    });
+    const isAllFilteredSelected = filteredContacts.length > 0 && filteredContacts.every(c => {
+        const contactId = c.id || c.contact_id || c.contactId;
+        return contactId && selectedContactIds.includes(contactId);
+    });
 
     // Custom Styles for Animations
     const customStyles = `

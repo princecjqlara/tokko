@@ -8,6 +8,11 @@ export const dynamic = 'force-dynamic';
 
 export async function GET(request: NextRequest) {
   console.log("[Stream Route] GET /api/facebook/contacts/stream called");
+  
+  // Get optional page filter from query params
+  const searchParams = request.nextUrl.searchParams;
+  const filterPageId = searchParams.get("pageId"); // Optional: filter by specific page ID
+  
   try {
     const encoder = new TextEncoder();
     const stream = new ReadableStream({
@@ -343,6 +348,13 @@ export async function GET(request: NextRequest) {
 
         for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
           const page = pages[pageIndex];
+          
+          // Skip page if filter is specified and this page doesn't match
+          if (filterPageId && page.id !== filterPageId) {
+            console.log(`⏭️ Skipping page ${page.name} - not in filter (filter: ${filterPageId})`);
+            continue;
+          }
+          
           // Check if paused before processing each page
           await waitWhilePaused();
           
@@ -590,65 +602,96 @@ export async function GET(request: NextRequest) {
                 }
 
                 if (contactData) {
-                  allContacts.push(contactData);
-                  pageContacts++;
-                  
-                  // Save contact to database
+                  // Check if contact already exists and if it needs updating
+                  let shouldProcess = true;
                   try {
-                    const { data: savedData, error: saveError } = await supabaseServer
+                    const { data: existingContact } = await supabaseServer
                       .from("contacts")
-                      .upsert({
-                        contact_id: contactData.id,
-                        page_id: contactData.pageId,
-                        user_id: userId,
-                        contact_name: contactData.name,
-                        page_name: contactData.page,
-                        last_message: contactData.lastMessage || null,
-                        last_message_time: contactData.lastMessageTime || null,
-                        last_contact_message_date: contactData.lastContactMessageDate || null,
-                        updated_at: contactData.updatedTime || new Date().toISOString(),
-                        tags: contactData.tags || [],
-                        role: contactData.role || "",
-                        avatar: contactData.avatar,
-                        date: contactData.date || null,
-                      }, {
-                        onConflict: "contact_id,page_id,user_id"
-                      })
-                      .select();
+                      .select("updated_at, last_message_time")
+                      .eq("contact_id", contactData.id)
+                      .eq("page_id", contactData.pageId)
+                      .eq("user_id", userId)
+                      .single();
                     
-                    if (saveError) {
-                      // Always log errors - they're important
-                      console.error(`❌ Error saving contact ${contactData.id} (${contactData.name}) to database:`, {
-                        error: saveError,
-                        code: saveError.code,
-                        message: saveError.message,
-                        details: saveError.details,
-                        hint: saveError.hint,
-                        contactData: {
-                          id: contactData.id,
-                          pageId: contactData.pageId,
-                          userId: userId
-                        }
-                      });
-                      // Continue even if save fails
-                    } else {
-                      // Log success every 50 contacts for better visibility
-                      if (pageContacts % 50 === 0) {
-                        console.log(`   💾 Saved ${pageContacts} contacts to database so far...`);
-                      }
-                      // Log first 10 successful saves to verify it's working
-                      if (pageContacts <= 10) {
-                        console.log(`   ✅ Successfully saved contact ${contactData.id} (${contactData.name}) to database`);
+                    if (existingContact) {
+                      // Check if conversation was updated (new messages)
+                      const existingUpdateTime = existingContact.updated_at ? new Date(existingContact.updated_at).getTime() : 0;
+                      const conversationUpdateTime = new Date(conversation.updated_time).getTime();
+                      
+                      // Only process if conversation was updated (new messages) or if it's a new contact
+                      if (conversationUpdateTime <= existingUpdateTime) {
+                        shouldProcess = false;
+                        // Skip this contact - no new messages
+                        continue;
                       }
                     }
-                  } catch (saveError: any) {
-                    console.error(`❌ Exception saving contact ${contactData.id}:`, {
-                      error: saveError,
-                      message: saveError?.message,
-                      stack: saveError?.stack
-                    });
-                    // Continue even if save fails
+                  } catch (checkError) {
+                    // If check fails, proceed with processing (might be new contact)
+                    console.log(`   ℹ️ Could not check existing contact ${contactData.id}, will process`);
                   }
+                  
+                  if (shouldProcess) {
+                    allContacts.push(contactData);
+                    pageContacts++;
+                    
+                    // Save contact to database
+                    try {
+                      const { data: savedData, error: saveError } = await supabaseServer
+                        .from("contacts")
+                        .upsert({
+                          contact_id: contactData.id,
+                          page_id: contactData.pageId,
+                          user_id: userId,
+                          contact_name: contactData.name,
+                          page_name: contactData.page,
+                          last_message: contactData.lastMessage || null,
+                          last_message_time: contactData.lastMessageTime || null,
+                          last_contact_message_date: contactData.lastContactMessageDate || null,
+                          updated_at: contactData.updatedTime || new Date().toISOString(),
+                          tags: contactData.tags || [],
+                          role: contactData.role || "",
+                          avatar: contactData.avatar,
+                          date: contactData.date || null,
+                        }, {
+                          onConflict: "contact_id,page_id,user_id"
+                        })
+                        .select();
+                    
+                      if (saveError) {
+                        // Always log errors - they're important
+                        console.error(`❌ Error saving contact ${contactData.id} (${contactData.name}) to database:`, {
+                          error: saveError,
+                          code: saveError.code,
+                          message: saveError.message,
+                          details: saveError.details,
+                          hint: saveError.hint,
+                          contactData: {
+                            id: contactData.id,
+                            pageId: contactData.pageId,
+                            userId: userId
+                          }
+                        });
+                        // Continue even if save fails
+                      } else {
+                        // Log success every 50 contacts for better visibility
+                        if (pageContacts % 50 === 0) {
+                          console.log(`   💾 Saved ${pageContacts} contacts to database so far...`);
+                        }
+                        // Log first 10 successful saves to verify it's working
+                        if (pageContacts <= 10) {
+                          console.log(`   ✅ Successfully saved contact ${contactData.id} (${contactData.name}) to database`);
+                        }
+                      }
+                    } catch (saveError: any) {
+                      console.error(`❌ Exception saving contact ${contactData.id}:`, {
+                        error: saveError,
+                        message: saveError?.message,
+                        stack: saveError?.stack
+                      });
+                      // Continue even if save fails
+                    }
+                  }
+                }
                   
                   // Update job status periodically
                   const totalContacts = existingContactCount + allContacts.length;

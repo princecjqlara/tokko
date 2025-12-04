@@ -248,7 +248,7 @@ async function triggerAutoFetch(pageId: string) {
       const userId = userPage.user_id;
       
       // Create a fetch job that will trigger automatic fetching
-      // The frontend will poll for this and start fetching if needed
+      // Set status to "pending" to trigger a fetch for this specific page
       await supabaseServer
         .from("fetch_jobs")
         .upsert({
@@ -259,10 +259,27 @@ async function triggerAutoFetch(pageId: string) {
           current_page_number: null,
           total_pages: null,
           total_contacts: null,
-          message: `New message detected on page, auto-fetching contacts...`,
+          message: `New message detected, auto-fetching contacts for page ${pageId}...`,
         }, {
           onConflict: "user_id",
         });
+      
+      // Also trigger immediate fetch for this specific page via API
+      // This ensures new contacts are fetched right away
+      try {
+        const fetchUrl = `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/facebook/contacts/stream?pageId=${pageId}`;
+        // Trigger fetch in background (don't wait)
+        fetch(fetchUrl, {
+          method: 'GET',
+          headers: {
+            'Cookie': '', // Will use session from request
+          },
+        }).catch(err => {
+          console.error(`Error triggering immediate fetch for page ${pageId}:`, err);
+        });
+      } catch (fetchErr) {
+        console.error(`Error setting up fetch for page ${pageId}:`, fetchErr);
+      }
       
       console.log(`✅ Triggered auto-fetch for user ${userId} due to new message on page ${pageId}`);
     }
