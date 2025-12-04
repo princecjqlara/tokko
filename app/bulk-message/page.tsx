@@ -1298,8 +1298,8 @@ export default function BulkMessagePage() {
 
     // Select Page (only visible contacts)
     const toggleSelectPage = () => {
-        const pageIds = paginatedContacts.map(c => c.id);
-        const isPageSelected = pageIds.every(id => selectedContactIds.includes(id));
+        const pageIds = paginatedContacts.map(c => c.id || c.contact_id || c.contactId).filter(id => id !== undefined && id !== null);
+        const isPageSelected = pageIds.length > 0 && pageIds.every(id => selectedContactIds.includes(id));
 
         if (isPageSelected) {
             setSelectedContactIds(prev => prev.filter(id => !pageIds.includes(id)));
