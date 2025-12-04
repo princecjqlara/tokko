@@ -639,7 +639,10 @@ export async function GET(request: NextRequest) {
             let processedCount = 0;
             const processingStartTime = Date.now();
             const MAX_PROCESSING_TIME = 4 * 60 * 1000; // 4 minutes max per page
-            let lastSentContactCount = 0; // Track last sent count to ensure it never decreases
+            // Use the global lastSentContactCount, initialize page-level if needed
+            if (lastSentContactCount < existingContactCount) {
+              lastSentContactCount = existingContactCount;
+            }
             
             console.log(`   🚀 [Stream Route] Starting to process ${allConversations.length} conversations for ${page.name}`);
             
