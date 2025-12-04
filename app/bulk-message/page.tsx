@@ -1571,11 +1571,31 @@ export default function BulkMessagePage() {
                                         </div>
                                         
                                         <button
-                                            onClick={handleReconnect}
-                                            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-zinc-300 hover:bg-indigo-500/20 hover:text-indigo-400 rounded-lg transition-colors text-left"
+                                            onClick={() => {
+                                                hasFetchedRef.current = false;
+                                                isFetchingRef.current = false;
+                                                isConnectingRef.current = false;
+                                                if (userId) {
+                                                    const storageKey = `hasFetched_${userId}`;
+                                                    localStorage.removeItem(storageKey);
+                                                }
+                                                fetchContactsRealtime();
+                                            }}
+                                            disabled={fetchingProgress.isFetching}
+                                            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-zinc-300 hover:bg-indigo-500/20 hover:text-indigo-400 rounded-lg transition-colors text-left disabled:opacity-50 disabled:cursor-not-allowed"
                                         >
                                             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                                                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                            </svg>
+                                            <span>{fetchingProgress.isFetching ? "Syncing..." : "Sync Contacts"}</span>
+                                        </button>
+                                        
+                                        <button
+                                            onClick={handleReconnect}
+                                            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-zinc-300 hover:bg-indigo-500/20 hover:text-indigo-400 rounded-lg transition-colors text-left mt-1"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
                                             </svg>
                                             <span>Reconnect Facebook</span>
                                         </button>
