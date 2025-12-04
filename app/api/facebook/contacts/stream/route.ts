@@ -919,30 +919,33 @@ export async function GET(request: NextRequest) {
                   // Mark as processed locally (for this page)
                   processedContactKeys.add(contactKey);
                   
-                  // Send contact immediately for UI updates
-                  const totalContacts = existingContactCount + allContacts.length;
-                  
-                  // Ensure count never decreases
-                  const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
-                  lastSentContactCount = safeTotalContacts;
-                  
-                  send({
-                    type: "contact",
-                    contact: contactData,
-                    totalContacts: safeTotalContacts
-                  });
-                  
-                  // Send progress update every contact for real-time feel (but throttle to every 5 contacts to avoid spam)
-                  // Always show cumulative total across all pages, not per-page count
-                  if (allContacts.length % 5 === 0) {
+                  // Only send contact event and update count for NEW unique contacts (not duplicates across pages)
+                  if (!isDuplicateAcrossPages) {
+                    // Send contact immediately for UI updates
+                    const totalContacts = existingContactCount + allContacts.length;
+                    
+                    // Ensure count never decreases
+                    const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
+                    lastSentContactCount = safeTotalContacts;
+                    
                     send({
-                      type: "status",
-                      message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
-                      totalContacts: safeTotalContacts,
-                      currentPage: currentPageNumber,
-                      totalPages: pages.length,
-                      progress: Math.round((processedCount / allConversations.length) * 100)
+                      type: "contact",
+                      contact: contactData,
+                      totalContacts: safeTotalContacts
                     });
+                    
+                    // Send progress update every contact for real-time feel (but throttle to every 5 contacts to avoid spam)
+                    // Always show cumulative total across all pages, not per-page count
+                    if (allContacts.length % 5 === 0) {
+                      send({
+                        type: "status",
+                        message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
+                        totalContacts: safeTotalContacts,
+                        currentPage: currentPageNumber,
+                        totalPages: pages.length,
+                        progress: Math.round((processedCount / allConversations.length) * 100)
+                      });
+                    }
                   }
                 }
               } // End if (contact)
