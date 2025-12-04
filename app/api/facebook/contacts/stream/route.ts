@@ -26,9 +26,10 @@ export async function GET(request: NextRequest) {
     // Declare userId and accessToken at outer scope for error handler access
     let userId: string | undefined;
     let accessToken: string | undefined;
-    // Declare allContacts at outer scope for timeout handler access
+    // Declare allContacts and existingContactCount at outer scope for timeout handler access
     let allContacts: any[] = [];
     let processedPagesCount = 0;
+    let existingContactCount = 0;
     
     const stream = new ReadableStream({
       async start(controller) {
@@ -200,7 +201,6 @@ export async function GET(request: NextRequest) {
         };
 
         // Get existing contact count from database to preserve it
-        let existingContactCount = 0;
         try {
           const { count, error: countError } = await supabaseServer
             .from("contacts")
