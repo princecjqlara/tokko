@@ -348,9 +348,14 @@ export async function GET(request: NextRequest) {
             }
           }
         } catch (pagesError: any) {
-          console.error("Error fetching pages:", pagesError);
+          console.error("[Stream Route] Error fetching pages:", pagesError);
+          // Check if it's a timeout
+          if (pagesError.message?.includes("timeout")) {
+            console.warn("[Stream Route] Database query timed out, trying Facebook API...");
+          }
           // Try Facebook API as last resort with retry
           try {
+            console.log("[Stream Route] Attempting fallback to Facebook API...");
             const pagesResponse = await fetchWithRetry(
               `https://graph.facebook.com/v18.0/me/accounts?access_token=${accessToken}&fields=id,name,access_token&limit=1000`
             );
