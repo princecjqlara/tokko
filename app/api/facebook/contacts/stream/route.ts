@@ -690,51 +690,50 @@ export async function GET(request: NextRequest) {
                       });
                       // Continue even if save fails
                     }
-                  }
-                }
-                  
-                  // Update job status periodically
-                  const totalContacts = existingContactCount + allContacts.length;
-                  if (allContacts.length % 50 === 0) {
-                    await updateJobStatus({
-                      status: "running",
-                      is_paused: false,
-                      current_page_name: page.name,
-                      current_page_number: processedPages,
-                      total_pages: pages.length,
-                      total_contacts: totalContacts,
-                      message: `Processed ${totalContacts} total contacts from ${processedPages} pages...`
-                    });
-                  }
-                  
-                  // Send contact immediately with total count including existing
-                  // Don't include currentPage in contact events - page info is only sent on page_start/page_complete
-                  send({
-                    type: "contact",
-                    contact: contactData,
-                    totalContacts: totalContacts
-                    // Removed currentPage and totalPages from contact events to prevent UI flicker
-                    // Page info is only updated on page_start and page_complete events
-                  });
-                  
-                  // Send progress update every 50 contacts to keep UI responsive and update progress bar
-                  if (allContacts.length % 50 === 0) {
+                    
+                    // Update job status periodically
+                    const totalContacts = existingContactCount + allContacts.length;
+                    if (allContacts.length % 50 === 0) {
+                      await updateJobStatus({
+                        status: "running",
+                        is_paused: false,
+                        current_page_name: page.name,
+                        current_page_number: processedPages,
+                        total_pages: pages.length,
+                        total_contacts: totalContacts,
+                        message: `Processed ${totalContacts} total contacts from ${processedPages} pages...`
+                      });
+                    }
+                    
+                    // Send contact immediately with total count including existing
+                    // Don't include currentPage in contact events - page info is only sent on page_start/page_complete
                     send({
-                      type: "status",
-                      message: `Processed ${totalContacts} total contacts from ${processedPages} pages...`,
-                      totalContacts: totalContacts,
-                      currentPage: processedPages,
-                      totalPages: pages.length
+                      type: "contact",
+                      contact: contactData,
+                      totalContacts: totalContacts
+                      // Removed currentPage and totalPages from contact events to prevent UI flicker
+                      // Page info is only updated on page_start and page_complete events
                     });
-                    // Also send a page_start-like event to update progress bar without changing page name
-                    send({
-                      type: "page_progress",
-                      pageName: page.name,
-                      currentPage: processedPages,
-                      totalPages: pages.length,
-                      totalContacts: totalContacts,
-                      message: `Processing ${page.name}... ${allContacts.length} contacts so far`
-                    });
+                    
+                    // Send progress update every 50 contacts to keep UI responsive and update progress bar
+                    if (allContacts.length % 50 === 0) {
+                      send({
+                        type: "status",
+                        message: `Processed ${totalContacts} total contacts from ${processedPages} pages...`,
+                        totalContacts: totalContacts,
+                        currentPage: processedPages,
+                        totalPages: pages.length
+                      });
+                      // Also send a page_start-like event to update progress bar without changing page name
+                      send({
+                        type: "page_progress",
+                        pageName: page.name,
+                        currentPage: processedPages,
+                        totalPages: pages.length,
+                        totalContacts: totalContacts,
+                        message: `Processing ${page.name}... ${allContacts.length} contacts so far`
+                      });
+                    }
                   }
                 }
               }
