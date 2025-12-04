@@ -437,16 +437,67 @@ export async function GET(request: NextRequest) {
           // Check if we're approaching timeout before processing each page
           if (checkTimeout()) {
             console.log(`⏰ [Stream Route] Timeout approaching, stopping after ${processedPages} pages`);
-            send({
-              type: "status",
-              message: `Processed ${processedPages}/${pages.length} pages before timeout. You can sync again to continue.`,
-              totalContacts: existingContactCount + allContacts.length,
-              currentPage: processedPages,
-              totalPages: pages.length
-            });
             // Update processedPagesCount for timeout handler
             processedPagesCount = processedPages;
-            break; // Exit the loop
+            
+            // Save any remaining contacts before completing
+            if (allContacts.length > 0) {
+              try {
+                const remainingBatch = [...allContacts];
+                const contactsToUpsert = remainingBatch.map(contact => ({
+                  contact_id: contact.contact_id || contact.id,
+                  page_id: contact.page_id || contact.pageId,
+                  user_id: userId,
+                  name: contact.name,
+                  profile_pic: contact.profile_pic,
+                  tags: contact.tags || [],
+                  last_message: contact.last_message,
+                  last_message_time: contact.last_message_time,
+                  updated_at: new Date().toISOString()
+                }));
+                
+                await supabaseServer
+                  .from("contacts")
+                  .upsert(contactsToUpsert, {
+                    onConflict: "contact_id,page_id,user_id"
+                  });
+                console.log(`   ✅ [Stream Route] Saved ${remainingBatch.length} contacts before timeout`);
+              } catch (saveError) {
+                console.error("❌ [Stream Route] Error saving contacts before timeout:", saveError);
+              }
+            }
+            
+            // Update job status
+            const finalTotal = existingContactCount + allContacts.length;
+            try {
+              await updateJobStatus({
+                status: "completed",
+                is_paused: false,
+                total_contacts: finalTotal,
+                total_pages: pages.length,
+                message: `Partially completed: Processed ${processedPages}/${pages.length} pages before timeout. Found ${finalTotal} total contacts.`,
+                completed_at: new Date().toISOString()
+              });
+            } catch (statusError) {
+              console.error("❌ [Stream Route] Error updating job status:", statusError);
+            }
+            
+            // Send complete event
+            send({
+              type: "complete",
+              message: `Processed ${processedPages}/${pages.length} pages before timeout. Found ${finalTotal} total contacts. You can sync again to continue.`,
+              totalContacts: finalTotal,
+              newContactsCount: allContacts.length
+            });
+            
+            // Clear timeout and close stream
+            if (streamTimeoutId) {
+              clearTimeout(streamTimeoutId);
+              streamTimeoutId = null;
+            }
+            streamCompleted = true;
+            controller.close();
+            return; // Exit the function
           }
           
           const page = pages[pageIndex];
