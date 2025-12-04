@@ -1933,23 +1933,6 @@ export default function BulkMessagePage() {
                                         </div>
                                     </div>
                                     
-                                    {/* Progress Bar */}
-                                    {fetchingProgress.currentPageNumber !== undefined && fetchingProgress.totalPages !== undefined && (
-                                        <div className="mb-3">
-                                            <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
-                                                <div 
-                                                    className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
-                                                    style={{ 
-                                                        width: `${Math.min(100, Math.max(0, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100))}%` 
-                                                    }}
-                                                />
-                                            </div>
-                                            <div className="flex justify-between items-center text-xs text-zinc-500 mt-1">
-                                                <span>Page {fetchingProgress.currentPageNumber} of {fetchingProgress.totalPages}</span>
-                                                <span>{Math.round(Math.min(100, Math.max(0, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100)))}%</span>
-                                            </div>
-                                        </div>
-                                    )}
                                     
                                     {/* Recent Contacts */}
                                     {fetchingProgress.recentContacts.length > 0 && (
