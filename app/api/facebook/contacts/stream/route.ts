@@ -5,6 +5,7 @@ import { supabaseServer } from "@/lib/supabase-server";
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300; // 5 minutes max duration for the stream
 
 export async function GET(request: NextRequest) {
   console.log("[Stream Route] GET /api/facebook/contacts/stream called");
@@ -75,9 +76,15 @@ export async function GET(request: NextRequest) {
           }
         };
 
-        // Helper function to wait while paused
-        const waitWhilePaused = async (): Promise<void> => {
+        // Helper function to wait while paused (with timeout to prevent infinite wait)
+        const waitWhilePaused = async (maxWaitTime = 300000): Promise<void> => { // 5 minute max wait
+          const startTime = Date.now();
           while (await checkIfPaused()) {
+            // Check if we've exceeded max wait time
+            if (Date.now() - startTime > maxWaitTime) {
+              console.warn("⚠️ Pause wait timeout exceeded, continuing...");
+              break;
+            }
             send({ 
               type: "status", 
               message: "Fetching paused. Waiting to resume..." 
@@ -371,7 +378,8 @@ export async function GET(request: NextRequest) {
           // Get the most recent contact update time for this page
           let lastPageUpdate: Date | null = null;
           try {
-            const { data: lastContact } = await supabaseServer
+            // Add timeout to database query (10 seconds)
+            const lastContactPromise = supabaseServer
               .from("contacts")
               .select("updated_at")
               .eq("page_id", page.id)
@@ -379,6 +387,24 @@ export async function GET(request: NextRequest) {
               .order("updated_at", { ascending: false })
               .limit(1)
               .single();
+            
+            const lastContactTimeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error("Database query timeout")), 10000)
+            );
+            
+            let lastContact: any = null;
+            try {
+              const result = await Promise.race([
+                lastContactPromise,
+                lastContactTimeoutPromise
+              ]) as any;
+              lastContact = result?.data;
+            } catch (timeoutError: any) {
+              if (timeoutError.message?.includes("timeout")) {
+                console.warn(`⏱️ Timeout checking last page update for ${page.name}, proceeding without skip check`);
+              }
+              // Continue without lastPageUpdate - will fetch all conversations
+            }
             
             if (lastContact?.updated_at) {
               lastPageUpdate = new Date(lastContact.updated_at);
@@ -457,13 +483,25 @@ export async function GET(request: NextRequest) {
             // Fetch conversations with pagination
             let allConversations: any[] = [];
             let currentConversationsUrl: string | null = conversationsUrl;
+            let paginationIterations = 0;
+            const MAX_PAGINATION_ITERATIONS = 1000; // Safety limit to prevent infinite loops
             
             // Fetch conversations with pagination
-            while (currentConversationsUrl) {
+            while (currentConversationsUrl && paginationIterations < MAX_PAGINATION_ITERATIONS) {
+              paginationIterations++;
+              
               // Check if paused before each API call
               await waitWhilePaused();
               
-              const conversationsResponse: Response = await fetch(currentConversationsUrl);
+              // Add timeout to fetch request (30 seconds)
+              const fetchController = new AbortController();
+              const timeoutId = setTimeout(() => fetchController.abort(), 30000);
+              
+              try {
+                const conversationsResponse: Response = await fetch(currentConversationsUrl, {
+                  signal: fetchController.signal
+                });
+                clearTimeout(timeoutId);
 
               if (conversationsResponse.ok) {
                 const conversationsData: any = await conversationsResponse.json();
@@ -475,15 +513,22 @@ export async function GET(request: NextRequest) {
                 // Check if there are more pages
                 currentConversationsUrl = conversationsData.paging?.next || null;
                 
-                if (conversationsUrl) {
+                // Send progress update every 100 conversations or when starting a new page
+                if (allConversations.length % 100 === 0 || paginationIterations === 1) {
                   send({
                     type: "page_conversations",
                     pageName: page.name,
                     conversationsCount: allConversations.length,
-                    message: `Fetched ${allConversations.length} conversations so far, fetching more...`
+                    message: `Fetched ${allConversations.length} conversations so far${currentConversationsUrl ? ', fetching more...' : ''}`
                   });
                 }
+                
+                // Safety check: if we've fetched a lot, add a small delay to avoid rate limits
+                if (allConversations.length % 500 === 0 && allConversations.length > 0) {
+                  await new Promise(resolve => setTimeout(resolve, 500)); // 500ms delay every 500 conversations
+                }
               } else {
+                clearTimeout(timeoutId);
                 const errorData = await conversationsResponse.json().catch(() => ({}));
                 const errorMessage = errorData.error?.message || errorData.error?.error_user_msg || "Failed to fetch conversations";
                 const errorCode = errorData.error?.code;
@@ -505,6 +550,35 @@ export async function GET(request: NextRequest) {
                 });
                 currentConversationsUrl = null; // Stop pagination on error
               }
+              } catch (fetchError: any) {
+                clearTimeout(timeoutId);
+                if (fetchError.name === 'AbortError') {
+                  console.error(`⏱️ Timeout fetching conversations for page ${page.name} (${page.id})`);
+                  send({
+                    type: "page_error",
+                    pageName: page.name,
+                    error: "Request timeout (30s) - API is slow, continuing with next page..."
+                  });
+                } else {
+                  console.error(`❌ Exception fetching conversations for page ${page.name}:`, fetchError);
+                  send({
+                    type: "page_error",
+                    pageName: page.name,
+                    error: `Network error: ${fetchError.message}`
+                  });
+                }
+                currentConversationsUrl = null; // Stop pagination on error
+              }
+            }
+            
+            // Safety check if we hit pagination limit
+            if (paginationIterations >= MAX_PAGINATION_ITERATIONS) {
+              console.warn(`⚠️ Hit pagination safety limit (${MAX_PAGINATION_ITERATIONS}) for page ${page.name}`);
+              send({
+                type: "page_error",
+                pageName: page.name,
+                error: `Pagination limit reached (${MAX_PAGINATION_ITERATIONS} iterations) - stopping to prevent infinite loop`
+              });
             }
 
             console.log(`   📊 Page ${page.name}: Processing ${allConversations.length} total conversations`);
@@ -620,13 +694,37 @@ export async function GET(request: NextRequest) {
                   let isNewContact = true;
                   
                   try {
-                    const { data: existingContact, error: checkError } = await supabaseServer
+                    // Add timeout to database query (10 seconds)
+                    const dbCheckPromise = supabaseServer
                       .from("contacts")
                       .select("updated_at, last_message_time, contact_id")
                       .eq("contact_id", contactData.id)
                       .eq("page_id", contactData.pageId)
                       .eq("user_id", userId)
                       .maybeSingle(); // Use maybeSingle() instead of single() to handle no results gracefully
+                    
+                    const timeoutPromise = new Promise((_, reject) => 
+                      setTimeout(() => reject(new Error("Database query timeout")), 10000)
+                    );
+                    
+                    let existingContact: any = null;
+                    let checkError: any = null;
+                    
+                    try {
+                      const result = await Promise.race([
+                        dbCheckPromise,
+                        timeoutPromise
+                      ]) as any;
+                      existingContact = result?.data;
+                      checkError = result?.error;
+                    } catch (timeoutError: any) {
+                      // Timeout or other error occurred
+                      if (timeoutError.message?.includes("timeout")) {
+                        console.warn(`⏱️ Database check timeout for contact ${contactData.id}, proceeding anyway`);
+                      } else {
+                        checkError = timeoutError;
+                      }
+                    }
                     
                     if (existingContact && !checkError) {
                       isNewContact = false;
@@ -663,7 +761,8 @@ export async function GET(request: NextRequest) {
                     
                     // Save contact to database
                     try {
-                      const { data: savedData, error: saveError } = await supabaseServer
+                      // Add timeout to database upsert (10 seconds)
+                      const dbSavePromise = supabaseServer
                         .from("contacts")
                         .upsert({
                           contact_id: contactData.id,
@@ -683,7 +782,31 @@ export async function GET(request: NextRequest) {
                           onConflict: "contact_id,page_id,user_id"
                         })
                         .select();
-                    
+                      
+                      const saveTimeoutPromise = new Promise((_, reject) => 
+                        setTimeout(() => reject(new Error("Database save timeout")), 10000)
+                      );
+                      
+                      let savedData: any = null;
+                      let saveError: any = null;
+                      
+                      try {
+                        const result = await Promise.race([
+                          dbSavePromise,
+                          saveTimeoutPromise
+                        ]) as any;
+                        savedData = result?.data;
+                        saveError = result?.error;
+                      } catch (timeoutError: any) {
+                        // Timeout or other error occurred
+                        if (timeoutError.message?.includes("timeout")) {
+                          console.warn(`⏱️ Database save timeout for contact ${contactData.id}, contact may not be saved`);
+                          saveError = { message: "Database save timeout", code: "TIMEOUT" };
+                        } else {
+                          saveError = timeoutError;
+                        }
+                      }
+                      
                       if (saveError) {
                         // Always log errors - they're important
                         console.error(`❌ Error saving contact ${contactData.id} (${contactData.name}) to database:`, {
