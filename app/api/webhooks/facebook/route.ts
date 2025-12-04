@@ -1,111 +1,254 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
-import { addEvent } from "./events/route";
+import { supabaseServer } from "@/lib/supabase-server";
 
-// Webhook verification token from environment
-const VERIFY_TOKEN = process.env.FACEBOOK_WEBHOOK_VERIFY_TOKEN;
-const APP_SECRET = process.env.FACEBOOK_APP_SECRET;
-
-// GET endpoint for webhook verification (Facebook calls this to verify)
+// Webhook verification for Facebook
 export async function GET(request: NextRequest) {
-  const searchParams = request.nextUrl.searchParams;
-  const mode = searchParams.get("hub.mode");
-  const token = searchParams.get("hub.verify_token");
-  const challenge = searchParams.get("hub.challenge");
+  try {
+    const searchParams = request.nextUrl.searchParams;
+    const mode = searchParams.get("hub.mode");
+    const token = searchParams.get("hub.verify_token");
+    const challenge = searchParams.get("hub.challenge");
 
-  console.log("[Webhook] Verification request:", { mode, token, challenge });
+    const verifyToken = process.env.FACEBOOK_WEBHOOK_VERIFY_TOKEN;
 
-  // Facebook sends a GET request with these parameters to verify the webhook
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("[Webhook] Verification successful");
-    // Return the challenge to complete verification
-    return new NextResponse(challenge, { status: 200 });
+    if (!verifyToken) {
+      console.error("FACEBOOK_WEBHOOK_VERIFY_TOKEN is not set");
+      return new NextResponse("Server configuration error", { status: 500 });
+    }
+
+    if (mode === "subscribe" && token === verifyToken) {
+      console.log("✅ Webhook verified successfully");
+      return new NextResponse(challenge, { status: 200 });
+    } else {
+      console.error("❌ Webhook verification failed", { mode, token, expectedToken: verifyToken });
+      return new NextResponse("Verification failed", { status: 403 });
+    }
+  } catch (error: any) {
+    console.error("Error in webhook verification:", error);
+    return new NextResponse("Internal server error", { status: 500 });
   }
-
-  console.log("[Webhook] Verification failed:", { mode, token, expectedToken: VERIFY_TOKEN });
-  return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 }
 
-// POST endpoint to receive webhook events from Facebook
+// Handle webhook events from Facebook
 export async function POST(request: NextRequest) {
   try {
     // Verify webhook signature for security
     const signature = request.headers.get("x-hub-signature-256");
-    if (!signature && APP_SECRET) {
-      console.warn("[Webhook] No signature provided, but APP_SECRET is set");
-    }
+    const appSecret = process.env.FACEBOOK_APP_SECRET || process.env.FACEBOOK_CLIENT_SECRET;
 
-    const body = await request.text();
-    
-    // Verify signature if APP_SECRET is configured
-    if (APP_SECRET && signature) {
+    if (appSecret && signature) {
+      const body = await request.text();
       const expectedSignature = `sha256=${crypto
-        .createHmac("sha256", APP_SECRET)
+        .createHmac("sha256", appSecret)
         .update(body)
         .digest("hex")}`;
-      
+
       if (signature !== expectedSignature) {
-        console.error("[Webhook] Signature verification failed");
-        return NextResponse.json({ error: "Invalid signature" }, { status: 403 });
+        console.error("❌ Invalid webhook signature");
+        return new NextResponse("Invalid signature", { status: 403 });
       }
+
+      // Parse the body after verification
+      const data = JSON.parse(body);
+      await processWebhookEvent(data);
+    } else {
+      // If no secret configured, log a warning but process anyway (for development)
+      if (!appSecret) {
+        console.warn("⚠️ FACEBOOK_APP_SECRET not set - skipping signature verification");
+      }
+      const data = await request.json();
+      await processWebhookEvent(data);
     }
 
-    const data = JSON.parse(body);
-    console.log("[Webhook] Received event:", JSON.stringify(data, null, 2));
-
-    // Handle different webhook event types
-    if (data.object === "page") {
-      for (const entry of data.entry || []) {
-        // Process messaging events
-        if (entry.messaging) {
-          for (const event of entry.messaging) {
-            const webhookEvent = {
-              type: "messaging",
-              pageId: entry.id,
-              sender: event.sender?.id,
-              recipient: event.recipient?.id,
-              timestamp: event.timestamp,
-              message: event.message,
-              postback: event.postback,
-              read: event.read,
-              delivery: event.delivery,
-              optin: event.optin,
-              raw: event,
-            };
-            
-            // Store event for frontend polling
-            addEvent(webhookEvent);
-            console.log("[Webhook] Processed messaging event:", webhookEvent);
-          }
-        }
-
-        // Process conversation events
-        if (entry.conversations) {
-          for (const conversation of entry.conversations) {
-            const webhookEvent = {
-              type: "conversation",
-              pageId: entry.id,
-              conversationId: conversation.id,
-              participants: conversation.participants,
-              updatedTime: conversation.updated_time,
-              raw: conversation,
-            };
-            
-            addEvent(webhookEvent);
-            console.log("[Webhook] Processed conversation event:", webhookEvent);
-          }
-        }
-      }
-    }
-
-    // Always return 200 OK to acknowledge receipt
-    return NextResponse.json({ success: true });
+    return new NextResponse("OK", { status: 200 });
   } catch (error: any) {
-    console.error("[Webhook] Error processing webhook:", error);
-    // Still return 200 to prevent Facebook from retrying
-    return NextResponse.json(
-      { error: "Error processing webhook", details: error.message },
-      { status: 200 }
-    );
+    console.error("Error processing webhook:", error);
+    return new NextResponse("Internal server error", { status: 500 });
+  }
+}
+
+async function processWebhookEvent(data: any) {
+  try {
+    if (data.object !== "page") {
+      console.log("Ignoring non-page webhook event");
+      return;
+    }
+
+    for (const entry of data.entry || []) {
+      const pageId = entry.id;
+      
+      // Handle messaging events (new messages)
+      if (entry.messaging && Array.isArray(entry.messaging)) {
+        for (const event of entry.messaging) {
+          await handleMessagingEvent(pageId, event);
+        }
+      }
+
+      // Handle conversation updates
+      if (entry.conversations && Array.isArray(entry.conversations)) {
+        for (const conversation of entry.conversations) {
+          await handleConversationEvent(pageId, conversation);
+        }
+      }
+    }
+  } catch (error: any) {
+    console.error("Error processing webhook event:", error);
+  }
+}
+
+async function handleMessagingEvent(pageId: string, event: any) {
+  try {
+    const senderId = event.sender?.id;
+    const recipientId = event.recipient?.id;
+    
+    if (!senderId || !pageId) {
+      console.log("Missing sender or page ID in messaging event");
+      return;
+    }
+
+    // Only process if sender is not the page (i.e., it's a user message)
+    if (senderId === pageId) {
+      return;
+    }
+
+    console.log(`📨 New message event from ${senderId} on page ${pageId}`);
+
+    // Create or update fetch job to trigger contact fetch
+    await triggerContactFetch(pageId, senderId);
+    
+    // Also add event to events store for real-time updates
+    try {
+      const { addEvent } = await import("./events/route");
+      addEvent({
+        type: "message",
+        pageId,
+        senderId,
+        timestamp: event.timestamp || Date.now(),
+        message: event.message,
+      });
+    } catch (importError) {
+      console.error("Error importing events route:", importError);
+    }
+  } catch (error: any) {
+    console.error("Error handling messaging event:", error);
+  }
+}
+
+async function handleConversationEvent(pageId: string, conversation: any) {
+  try {
+    console.log(`💬 New conversation event on page ${pageId}`);
+    
+    // Get participants
+    const participants = conversation.participants?.data || [];
+    const contactId = participants.find((p: any) => p.id !== pageId)?.id;
+    
+    if (contactId) {
+      // Trigger contact fetch for this conversation
+      await triggerContactFetch(pageId, contactId);
+      
+      // Add event to events store
+      try {
+        const { addEvent } = await import("./events/route");
+        addEvent({
+          type: "conversation",
+          pageId,
+          contactId,
+          timestamp: conversation.updated_time ? new Date(conversation.updated_time).getTime() : Date.now(),
+        });
+      } catch (importError) {
+        console.error("Error importing events route:", importError);
+      }
+    }
+  } catch (error: any) {
+    console.error("Error handling conversation event:", error);
+  }
+}
+
+async function triggerContactFetch(pageId: string, contactId: string) {
+  try {
+    // Find all users who have access to this page
+    const { data: userPages, error } = await supabaseServer
+      .from("user_pages")
+      .select("user_id")
+      .eq("page_id", pageId);
+
+    if (error || !userPages || userPages.length === 0) {
+      console.log(`No users found for page ${pageId}`);
+      return;
+    }
+
+    // Get page name for better logging
+    const { data: pageData } = await supabaseServer
+      .from("facebook_pages")
+      .select("page_name")
+      .eq("page_id", pageId)
+      .maybeSingle();
+
+    const pageName = pageData?.page_name || pageId;
+
+    // Create or update fetch jobs for each user
+    for (const userPage of userPages) {
+      const userId = userPage.user_id;
+      
+      // Check if there's already a running or pending job
+      const { data: existingJob } = await supabaseServer
+        .from("fetch_jobs")
+        .select("id, status")
+        .eq("user_id", userId)
+        .in("status", ["running", "pending", "paused"])
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+
+      if (!existingJob || existingJob.status === "completed" || existingJob.status === "failed") {
+        // Get current contact count
+        const { count } = await supabaseServer
+          .from("contacts")
+          .select("*", { count: "exact", head: true })
+          .eq("user_id", userId);
+
+        // Create a new pending job that will trigger a fetch for this specific page
+        // The frontend will pick this up and start fetching immediately
+        await supabaseServer
+          .from("fetch_jobs")
+          .insert({
+            user_id: userId,
+            status: "pending",
+            is_paused: false,
+            current_page_name: pageName,
+            message: `🔄 New message from ${contactId} on ${pageName} - auto-fetching...`,
+            total_contacts: count || 0,
+          });
+        
+        console.log(`✅ Created pending fetch job for user ${userId} due to new message from ${contactId} on ${pageName}`);
+      } else {
+        // If job is paused, resume it
+        if (existingJob.status === "paused") {
+          await supabaseServer
+            .from("fetch_jobs")
+            .update({
+              status: "running",
+              is_paused: false,
+              message: `🔄 Resumed due to new message from ${contactId} on ${pageName}`,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", existingJob.id);
+          
+          console.log(`✅ Resumed fetch job ${existingJob.id} for user ${userId} due to new message`);
+        } else if (existingJob.status === "running") {
+          // Job is already running, just update message
+          await supabaseServer
+            .from("fetch_jobs")
+            .update({
+              message: `🔄 Processing - new message from ${contactId} on ${pageName} detected`,
+              updated_at: new Date().toISOString(),
+            })
+            .eq("id", existingJob.id);
+        }
+      }
+    }
+  } catch (error: any) {
+    console.error("Error triggering contact fetch:", error);
   }
 }
