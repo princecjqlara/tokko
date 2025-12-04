@@ -8,6 +8,7 @@ const nextConfig: NextConfig = {
       bodySizeLimit: '50mb',
     },
   },
+  // Force rebuild - ensure API routes are included
 };
 
 export default nextConfig;
