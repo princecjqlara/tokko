@@ -378,6 +378,7 @@ export async function GET(request: NextRequest) {
 
         const allContacts: any[] = [];
         let processedPages = 0;
+        let lastSentContactCount = existingContactCount; // Track last sent count globally to ensure it never decreases
         
         // Send initial status update with existing count
         send({
