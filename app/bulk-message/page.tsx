@@ -161,6 +161,7 @@ export default function BulkMessagePage() {
     const abortControllerRef = useRef<AbortController | null>(null);
     const isPausedRef = useRef(false);
     const isConnectingRef = useRef(false); // Track if we're in the process of connecting
+    const fetchContactsRealtimeRef = useRef<(() => void) | null>(null); // Ref to store fetchContactsRealtime function
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -959,7 +960,10 @@ export default function BulkMessagePage() {
                     // If there's a pending job and we're not already fetching, start fetching
                     if (jobData.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
                         console.log("[Frontend] New message detected, starting auto-fetch...");
-                        fetchContactsRealtime();
+                        // Call fetchContactsRealtime via ref if it's available
+                        if (fetchContactsRealtimeRef.current) {
+                            fetchContactsRealtimeRef.current();
+                        }
                     }
                 }
             } catch (error) {
@@ -1309,7 +1313,31 @@ export default function BulkMessagePage() {
                         }
                     } else {
                         const text = await uploadResponse.text();
-                        throw new Error(`Server returned non-JSON response: ${text.substring(0, 100)}`);
+                        const statusText = uploadResponse.statusText || "Unknown";
+                        const status = uploadResponse.status || "Unknown";
+                        
+                        // Log full response for debugging
+                        console.error("Non-JSON response received:", {
+                            status,
+                            statusText,
+                            contentType,
+                            responseText: text.substring(0, 500),
+                            headers: Object.fromEntries(uploadResponse.headers.entries())
+                        });
+                        
+                        // Try to extract error message from HTML if it's an error page
+                        let errorMessage = `Server returned non-JSON response (Status: ${status} ${statusText})`;
+                        if (text) {
+                            // Try to find error message in HTML
+                            const errorMatch = text.match(/<title>(.*?)<\/title>/i) || text.match(/<h1>(.*?)<\/h1>/i);
+                            if (errorMatch) {
+                                errorMessage += `: ${errorMatch[1]}`;
+                            } else if (text.length < 200) {
+                                errorMessage += `: ${text}`;
+                            }
+                        }
+                        
+                        throw new Error(errorMessage);
                     }
 
                     if (!uploadResponse.ok || !uploadData.success) {
