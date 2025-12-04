@@ -26,6 +26,9 @@ export async function GET(request: NextRequest) {
     // Declare userId and accessToken at outer scope for error handler access
     let userId: string | undefined;
     let accessToken: string | undefined;
+    // Declare allContacts at outer scope for timeout handler access
+    let allContacts: any[] = [];
+    let processedPagesCount = 0;
     
     const stream = new ReadableStream({
       async start(controller) {
@@ -415,7 +418,8 @@ export async function GET(request: NextRequest) {
           message: `Found ${pages.length} pages. Starting to fetch contacts...`
         });
 
-        const allContacts: any[] = [];
+        // Reset allContacts array for this stream
+        allContacts = [];
         let processedPages = 0; // Track number of pages actually processed (not skipped)
         let lastSentContactCount = existingContactCount; // Track last sent count globally to ensure it never decreases
         
@@ -507,6 +511,7 @@ export async function GET(request: NextRequest) {
           
           // Increment processedPages only when we actually start processing a page
           processedPages++;
+          processedPagesCount = processedPages; // Update outer scope variable
           
           await updateJobStatus({
             status: "running",
