@@ -808,8 +808,11 @@ export async function GET(request: NextRequest) {
           type: "complete",
           totalContacts: finalTotalContacts,
           totalPages: pages.length,
-          message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`
+          message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
+          newContactsCount: allContacts.length
         });
+        
+        console.log(`✅ [Stream Route] Completed fetch: ${allContacts.length} new contacts, ${finalTotalContacts} total contacts`);
 
           controller.close();
         } catch (error: any) {

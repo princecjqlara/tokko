@@ -615,7 +615,7 @@ export default function BulkMessagePage() {
                                     setFetchingProgress(prev => ({
                                         ...prev,
                                         isFetching: false,
-                                        message: data.message,
+                                        message: data.message || `Sync completed! ${data.newContactsCount || 0} new contacts found. Auto-fetching enabled for new messages.`,
                                         // NEVER decrease totalContacts - always use maximum of all sources
                                         totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length)
                                     }));
@@ -623,6 +623,7 @@ export default function BulkMessagePage() {
                                     isFetchingRef.current = false;
                                     isConnectingRef.current = false;
                                     abortControllerRef.current = null;
+                                    console.log(`✅ [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
                                     break;
                                 
                                 case "error":
@@ -986,25 +987,43 @@ export default function BulkMessagePage() {
     };
 
     // Poll for new contacts and auto-fetch when new messages arrive
+    // This runs continuously after initial sync to catch new messages immediately
     useEffect(() => {
         if (status !== "authenticated" || !session) return;
 
         let pollInterval = setInterval(async () => {
             try {
+                // Only check if we're not currently fetching
+                if (isFetchingRef.current || fetchingProgress.isFetching) {
+                    return;
+                }
+
                 // Check for pending fetch jobs (triggered by webhooks)
                 const jobResponse = await fetch("/api/facebook/contacts/background");
                 if (jobResponse.ok) {
                     const jobData = await jobResponse.json();
-                    // If there's a pending job and we're not already fetching, start fetching
-                    if (jobData.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
-                        console.log("[Frontend] New message detected, starting auto-fetch...");
+                    const job = jobData.job;
+                    
+                    // If there's a pending job triggered by webhook, start fetching immediately
+                    if (job && job.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
+                        console.log("[Frontend] 🚀 New message detected via webhook, starting immediate auto-fetch...");
+                        // Reset refs to allow fetch
+                        hasFetchedRef.current = false;
                         fetchContactsRealtime();
+                    } else if (job && job.status === "running" && job.is_paused) {
+                        // Resume paused job if needed
+                        console.log("[Frontend] Resuming paused fetch job...");
+                        await fetch("/api/facebook/contacts/pause", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ isPaused: false }),
+                        });
                     }
                 }
             } catch (error) {
                 console.error("Error checking for new messages:", error);
             }
-        }, 5000); // Poll every 5 seconds
+        }, 3000); // Poll every 3 seconds for faster response
 
         return () => clearInterval(pollInterval);
     }, [status, session, fetchingProgress.isFetching, fetchContactsRealtime]);
