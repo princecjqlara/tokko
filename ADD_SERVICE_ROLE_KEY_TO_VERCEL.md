@@ -36,3 +36,4 @@ After adding the key and redeploying:
 1. ✅ Create database tables in Supabase (run SQL migrations)
 2. ✅ Test message sending
 
+

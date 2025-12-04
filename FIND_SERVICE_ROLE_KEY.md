@@ -58,3 +58,4 @@ The service_role key will decode to show:
 2. Set for Production, Preview, and Development
 3. Redeploy your application
 
+

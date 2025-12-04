@@ -87,7 +87,7 @@ FACEBOOK_WEBHOOK_VERIFY_TOKEN
 ### Variable 7:
 **Key:**
 ```
-SUPABASE_URL
+NEXT_PUBLIC_SUPABASE_URL
 ```
 **Value:**
 ```
@@ -108,6 +108,19 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjaXJmYnd
 
 ---
 
+### Variable 9 (REQUIRED for server-side operations):
+**Key:**
+```
+SUPABASE_SERVICE_ROLE_KEY
+```
+**Value:**
+```
+(Get this from Supabase Dashboard → Settings → API → service_role key)
+```
+**Important:** This is required for server-side database operations. Without it, the build may fail or database operations will be blocked by RLS policies.
+
+---
+
 ## ⚠️ Important Notes
 - **No spaces** before or after the values
 - **Case sensitive** - copy variable names exactly
@@ -120,4 +133,5 @@ eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVjaXJmYnd
 3. Click **"..."** on the failed deployment
 4. Click **"Redeploy"**
 5. Build should now succeed! 🎉
+
 

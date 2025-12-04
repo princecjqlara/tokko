@@ -57,3 +57,4 @@ The fetching process should:
 - Continue fetching from where it left off
 - Skip already-fetched contacts
 
+

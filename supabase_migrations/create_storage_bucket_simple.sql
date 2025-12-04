@@ -48,3 +48,4 @@ WITH CHECK (bucket_id = 'message-attachments');
 -- 5. Set file size limit to 25MB
 -- 6. Then run only the policy creation part (Step 2 and 3) above
 
+

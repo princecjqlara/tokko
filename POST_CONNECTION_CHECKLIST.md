@@ -50,3 +50,4 @@ Once the endpoint works:
 - Verify environment variables are set in Vercel
 - Make sure deployment is "Ready" (not "Building" or "Error")
 
+

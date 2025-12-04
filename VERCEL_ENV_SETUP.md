@@ -97,3 +97,4 @@ In Vercel's environment variable interface, you enter the **KEY** and **VALUE** 
 4. Expected response: `test123` (the challenge value)
 5. Then verify in Facebook webhook settings
 
+

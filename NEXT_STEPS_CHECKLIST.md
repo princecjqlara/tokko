@@ -80,3 +80,4 @@
 - `supabase_migrations/create_user_pages_table.sql` - SQL to create user_pages table
 - `FIX_MESSAGE_SENDING.md` - Detailed fix instructions
 
+

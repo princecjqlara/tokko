@@ -72,3 +72,4 @@ CREATE TRIGGER update_scheduled_messages_updated_at_trigger
     FOR EACH ROW
     EXECUTE FUNCTION update_scheduled_messages_updated_at();
 
+

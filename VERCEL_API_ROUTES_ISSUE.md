@@ -113,3 +113,4 @@ If routes still don't work after checking the above:
 2. Try creating a simple test route to verify routing works
 3. Contact Vercel support with deployment logs
 
+

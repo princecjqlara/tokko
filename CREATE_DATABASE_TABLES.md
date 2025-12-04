@@ -98,3 +98,4 @@ CREATE POLICY "Service role can manage all user pages"
 - Refresh the Table Editor page
 - Check the SQL Editor for any error messages
 
+

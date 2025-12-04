@@ -66,3 +66,4 @@ WITH CHECK (bucket_id = 'message-attachments');
 -- SELECT * FROM storage.buckets WHERE id = 'message-attachments';
 -- ============================================
 
+

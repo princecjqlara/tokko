@@ -78,3 +78,4 @@ Once connected:
 - Make sure you're logged into the correct GitHub account when authorizing
 - Try disconnecting and reconnecting the GitHub integration
 
+

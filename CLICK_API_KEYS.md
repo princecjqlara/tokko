@@ -22,3 +22,4 @@ After clicking "API Keys", you'll see:
 3. Copy the entire key (it's long, starts with `eyJ...`)
 4. Add it to Vercel as `SUPABASE_SERVICE_ROLE_KEY`
 
+

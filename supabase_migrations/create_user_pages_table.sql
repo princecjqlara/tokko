@@ -39,3 +39,4 @@ CREATE POLICY "Service role can manage all user pages"
 -- Note: Since we're using NextAuth (not Supabase Auth) with service_role key,
 -- RLS is effectively bypassed for server-side operations
 
+

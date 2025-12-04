@@ -25,3 +25,4 @@ CREATE POLICY "Allow all operations for service role"
 -- the service role key bypasses RLS automatically, so these policies
 -- are only needed if you want to allow anon key access too.
 
+

@@ -57,3 +57,4 @@ Once the endpoint returns the challenge value, try verifying in Facebook again.
 - Verify all environment variables are set
 - Check that Supabase credentials are correct
 
+

@@ -5,7 +5,9 @@ import { supabaseServer } from "@/lib/supabase-server";
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
-export const maxDuration = 300; // 5 minutes max duration for the stream
+// Vercel Pro allows up to 300 seconds (5 minutes), Hobby plan allows 10 seconds
+// For large syncs, consider using background jobs instead
+export const maxDuration = 300; // 5 minutes max duration (requires Vercel Pro plan)
 
 export async function GET(request: NextRequest) {
   console.log("[Stream Route] GET /api/facebook/contacts/stream called");
