@@ -162,6 +162,7 @@ export default function BulkMessagePage() {
     const isPausedRef = useRef(false);
     const isConnectingRef = useRef(false); // Track if we're in the process of connecting
     const fetchContactsRealtimeRef = useRef<(() => void) | null>(null); // Ref to store fetchContactsRealtime function
+    const isLoadingContactsRef = useRef(false); // Prevent multiple simultaneous contact loads
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -359,56 +360,65 @@ export default function BulkMessagePage() {
         }));
         
         // Load existing contacts from database first (but still use stream for real-time updates)
-        try {
-            console.log("[Frontend] Checking for existing contacts in database...");
-            const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
-            if (existingResponse.ok) {
-                const existingData = await existingResponse.json();
-                console.log(`[Frontend] Received ${existingData.contacts?.length || 0} contacts from API`);
-                if (existingData.contacts && existingData.contacts.length > 0) {
-                    console.log(`[Frontend] Found ${existingData.contacts.length} existing contacts. Loading them into UI...`);
-                    setContacts(existingData.contacts);
-                    setFetchingProgress(prev => ({
-                        ...prev,
-                        totalContacts: existingData.contacts.length,
-                        message: `Loaded ${existingData.contacts.length} existing contacts. Fetching new ones...`
-                    }));
-                    // Continue to stream route to get real-time updates and fetch any new contacts
+        // Skip if we're already loading contacts or fetching
+        if (isLoadingContactsRef.current || isFetchingRef.current || fetchingProgress.isFetching) {
+            console.log("[Frontend] Skipping initial contact load - already loading or fetching");
+        } else {
+            isLoadingContactsRef.current = true;
+            try {
+                console.log("[Frontend] Checking for existing contacts in database...");
+                const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
+                if (existingResponse.ok) {
+                    const existingData = await existingResponse.json();
+                    console.log(`[Frontend] Received ${existingData.contacts?.length || 0} contacts from API`);
+                    if (existingData.contacts && existingData.contacts.length > 0) {
+                        console.log(`[Frontend] Found ${existingData.contacts.length} existing contacts. Loading them into UI...`);
+                        setContacts(existingData.contacts);
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            totalContacts: existingData.contacts.length,
+                            message: `Loaded ${existingData.contacts.length} existing contacts. Fetching new ones...`
+                        }));
+                        // Continue to stream route to get real-time updates and fetch any new contacts
+                    } else {
+                        console.log("[Frontend] No existing contacts found. Will fetch from Facebook API via stream...");
+                        // Reset count to 0 if no contacts found
+                        setContacts([]);
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            totalContacts: 0
+                        }));
+                    }
                 } else {
-                    console.log("[Frontend] No existing contacts found. Will fetch from Facebook API via stream...");
-                    // Reset count to 0 if no contacts found
-                    setContacts([]);
-                    setFetchingProgress(prev => ({
-                        ...prev,
-                        totalContacts: 0
-                    }));
+                    const errorText = await existingResponse.text();
+                    let errorData;
+                    try {
+                        errorData = JSON.parse(errorText);
+                    } catch {
+                        errorData = { error: errorText };
+                    }
+                    
+                    console.error("[Frontend] Error loading contacts:", errorData);
+                    
+                    // Check if it's a rate limit error
+                    if (errorData.error === "Facebook API rate limit reached" || errorData.details?.includes("rate limit")) {
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            isFetching: false,
+                            message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
+                        }));
+                        setIsLoading(false);
+                        isFetchingRef.current = false;
+                        isLoadingContactsRef.current = false;
+                        return;
+                    }
                 }
-            } else {
-                const errorText = await existingResponse.text();
-                let errorData;
-                try {
-                    errorData = JSON.parse(errorText);
-                } catch {
-                    errorData = { error: errorText };
-                }
-                
-                console.error("[Frontend] Error loading contacts:", errorData);
-                
-                // Check if it's a rate limit error
-                if (errorData.error === "Facebook API rate limit reached" || errorData.details?.includes("rate limit")) {
-                    setFetchingProgress(prev => ({
-                        ...prev,
-                        isFetching: false,
-                        message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
-                    }));
-                    setIsLoading(false);
-                    isFetchingRef.current = false;
-                    return;
-                }
+            } catch (e) {
+                console.error("[Frontend] Error loading existing contacts:", e);
+                console.log("No existing contacts found, starting fresh");
+            } finally {
+                isLoadingContactsRef.current = false;
             }
-        } catch (e) {
-            console.error("[Frontend] Error loading existing contacts:", e);
-            console.log("No existing contacts found, starting fresh");
         }
 
         // Create abort controller for cancellation
@@ -681,7 +691,15 @@ export default function BulkMessagePage() {
         }
         
         // Always load existing contacts from database first on mount/refresh
+        // BUT skip if we're currently fetching (to avoid resetting the UI)
         const loadExistingContacts = async () => {
+            // Don't reload contacts if we're actively fetching or already loading
+            if (isFetchingRef.current || fetchingProgress.isFetching || isLoadingContactsRef.current) {
+                console.log("[Frontend] Skipping contact load - fetch in progress");
+                return contacts.length;
+            }
+            
+            isLoadingContactsRef.current = true;
             try {
                 const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
                 if (existingResponse.ok) {
@@ -694,6 +712,7 @@ export default function BulkMessagePage() {
                             totalContacts: existingData.contacts.length,
                             message: `Loaded ${existingData.contacts.length} contacts from database`
                         }));
+                        isLoadingContactsRef.current = false;
                         return existingData.contacts.length;
                     } else {
                         // No contacts found - reset to 0
@@ -712,6 +731,8 @@ export default function BulkMessagePage() {
                     ...prev,
                     totalContacts: 0
                 }));
+            } finally {
+                isLoadingContactsRef.current = false;
             }
             return 0;
         };
@@ -727,49 +748,69 @@ export default function BulkMessagePage() {
                     // If there's a running or paused job, we should reconnect
                     if (job && (job.status === "running" || job.status === "paused")) {
                         console.log("[Frontend] Found active job, will reconnect to stream");
-                        // Load existing contacts first
-                        try {
-                            const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
-                            if (existingResponse.ok) {
-                                const existingData = await existingResponse.json();
-                                if (existingData.contacts && existingData.contacts.length > 0) {
-                                    console.log(`[Frontend] Loaded ${existingData.contacts.length} existing contacts from database`);
-                                    setContacts(existingData.contacts);
-                                    setFetchingProgress(prev => ({
-                                        ...prev,
-                                        totalContacts: existingData.contacts.length,
-                                        isFetching: job.status === "running" && !job.is_paused,
-                                        isPaused: job.is_paused || job.status === "paused",
-                                        currentPage: job.current_page_name,
-                                        // NEVER decrease page number - only move forward
-                                        currentPageNumber: job.current_page_number !== undefined && job.current_page_number !== null
-                                            ? Math.max(job.current_page_number, prev.currentPageNumber || 0)
-                                            : prev.currentPageNumber,
-                                        totalPages: job.total_pages,
-                                        message: job.message || `Resuming fetch... (${existingData.contacts.length} contacts loaded)`
-                                    }));
-                                } else {
-                                    // No contacts found - reset to 0
-                                    setContacts([]);
-                                    setFetchingProgress(prev => ({
-                                        ...prev,
-                                        totalContacts: 0,
-                                        isFetching: job.status === "running" && !job.is_paused,
-                                        isPaused: job.is_paused || job.status === "paused",
-                                        currentPage: job.current_page_name,
-                                        currentPageNumber: job.current_page_number || prev.currentPageNumber,
-                                        totalPages: job.total_pages,
-                                        message: job.message || "No contacts found"
-                                    }));
+                        // Only load existing contacts if we don't have any and we're not fetching
+                        // This prevents resetting the UI during an active fetch
+                        if (!isFetchingRef.current && !fetchingProgress.isFetching && contacts.length === 0 && !isLoadingContactsRef.current) {
+                            isLoadingContactsRef.current = true;
+                            try {
+                                const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
+                                if (existingResponse.ok) {
+                                    const existingData = await existingResponse.json();
+                                    if (existingData.contacts && existingData.contacts.length > 0) {
+                                        console.log(`[Frontend] Loaded ${existingData.contacts.length} existing contacts from database`);
+                                        setContacts(existingData.contacts);
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            totalContacts: existingData.contacts.length,
+                                            isFetching: job.status === "running" && !job.is_paused,
+                                            isPaused: job.is_paused || job.status === "paused",
+                                            currentPage: job.current_page_name,
+                                            // NEVER decrease page number - only move forward
+                                            currentPageNumber: job.current_page_number !== undefined && job.current_page_number !== null
+                                                ? Math.max(job.current_page_number, prev.currentPageNumber || 0)
+                                                : prev.currentPageNumber,
+                                            totalPages: job.total_pages,
+                                            message: job.message || `Resuming fetch... (${existingData.contacts.length} contacts loaded)`
+                                        }));
+                                    } else {
+                                        // No contacts found - update progress but don't reset contacts if we have some
+                                        if (contacts.length === 0) {
+                                            setContacts([]);
+                                        }
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            totalContacts: contacts.length || 0,
+                                            isFetching: job.status === "running" && !job.is_paused,
+                                            isPaused: job.is_paused || job.status === "paused",
+                                            currentPage: job.current_page_name,
+                                            currentPageNumber: job.current_page_number || prev.currentPageNumber,
+                                            totalPages: job.total_pages,
+                                            message: job.message || "No contacts found"
+                                        }));
+                                    }
                                 }
+                            } catch (e) {
+                                console.error("[Frontend] Error loading existing contacts:", e);
+                                // Don't reset contacts on error if we have some
+                                if (contacts.length === 0) {
+                                    setContacts([]);
+                                }
+                            } finally {
+                                isLoadingContactsRef.current = false;
                             }
-                        } catch (e) {
-                            console.error("[Frontend] Error loading existing contacts:", e);
-                            // On error, reset to empty
-                            setContacts([]);
+                        } else {
+                            // Just update the fetching progress state without reloading contacts
                             setFetchingProgress(prev => ({
                                 ...prev,
-                                totalContacts: 0
+                                isFetching: job.status === "running" && !job.is_paused,
+                                isPaused: job.is_paused || job.status === "paused",
+                                currentPage: job.current_page_name,
+                                currentPageNumber: job.current_page_number !== undefined && job.current_page_number !== null
+                                    ? Math.max(job.current_page_number, prev.currentPageNumber || 0)
+                                    : prev.currentPageNumber,
+                                totalPages: job.total_pages,
+                                totalContacts: Math.max(prev.totalContacts, contacts.length, job.total_contacts || 0),
+                                message: job.message || prev.message
                             }));
                         }
                         
@@ -968,8 +1009,8 @@ export default function BulkMessagePage() {
             }
         };
         
-        // Poll every 3 seconds (less frequent to avoid conflicts)
-        const interval = setInterval(pollJobStatus, 3000);
+        // Poll every 10 seconds (reduced frequency to avoid conflicts and excessive requests)
+        const interval = setInterval(pollJobStatus, 10000);
         
         // Poll immediately
         pollJobStatus();
@@ -1038,7 +1079,7 @@ export default function BulkMessagePage() {
             } catch (error) {
                 console.error("Error checking for new messages:", error);
             }
-        }, 3000); // Poll every 3 seconds for faster response
+        }, 10000); // Poll every 10 seconds (reduced to avoid excessive requests during fetch)
 
         return () => clearInterval(pollInterval);
     }, [status, session, fetchingProgress.isFetching, fetchContactsRealtime]);
