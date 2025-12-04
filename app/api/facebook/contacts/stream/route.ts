@@ -365,20 +365,24 @@ export async function GET(request: NextRequest) {
               lastPageUpdate = new Date(lastContact.updated_at);
               const minutesSinceUpdate = (Date.now() - lastPageUpdate.getTime()) / (1000 * 60);
               
-              // Skip if page was updated within last 5 minutes (already processed recently)
-              if (minutesSinceUpdate < 5) {
-                console.log(`⏭️ Skipping page ${page.name} - processed ${Math.round(minutesSinceUpdate)} minutes ago`);
+              // Only skip if page was updated very recently (within last 2 minutes) AND we're doing a full sync
+              // This allows incremental updates to still work via webhooks
+              // For full syncs, skip pages updated within last 2 minutes to avoid duplicate work
+              if (minutesSinceUpdate < 2) {
+                console.log(`⏭️ Skipping page ${page.name} - processed ${Math.round(minutesSinceUpdate * 10) / 10} minutes ago (too recent)`);
                 send({
                   type: "page_start",
                   pageName: page.name,
                   pageId: page.id,
                   currentPage: processedPages,
                   totalPages: pages.length,
-                  message: `Skipping ${page.name} (processed ${Math.round(minutesSinceUpdate)} min ago)`,
+                  message: `Skipping ${page.name} (processed ${Math.round(minutesSinceUpdate * 10) / 10} min ago)`,
                   progress: Math.round((processedPages / pages.length) * 100)
                 });
                 // Still count as processed for progress
                 continue;
+              } else {
+                console.log(`🔄 Page ${page.name} was last updated ${Math.round(minutesSinceUpdate * 10) / 10} minutes ago - will fetch only new conversations`);
               }
             }
           } catch (err) {

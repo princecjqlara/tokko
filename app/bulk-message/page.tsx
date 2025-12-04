@@ -110,12 +110,6 @@ const ImageIcon = () => (
     </svg>
 );
 
-const OldFileIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-        <polyline points="13 2 13 9 20 9"></polyline>
-    </svg>
-);
 
 export default function BulkMessagePage() {
     const { data: session, status } = useSession();
@@ -1001,12 +995,14 @@ export default function BulkMessagePage() {
     // Filter contacts - show contacts from all connected pages by default, or filter by selected page
     const filteredContacts = useMemo(() => {
         return contacts.filter((contact) => {
-            const matchesTag = selectedTag === "All" || contact.tags.includes(selectedTag);
+            const matchesTag = selectedTag === "All" || (contact.tags && contact.tags.includes(selectedTag));
             
             // Page filtering: "All Pages" shows everything, otherwise filter by selected page
-            const matchesPage = selectedPage === "All Pages" || contact.page === selectedPage;
+            // Check both contact.page and contact.page_name for compatibility
+            const contactPageName = contact.page || contact.page_name || contact.pageName;
+            const matchesPage = selectedPage === "All Pages" || contactPageName === selectedPage;
             
-            const matchesSearch = contact.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+            const matchesSearch = contact.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
                 contact.role?.toLowerCase().includes(searchQuery.toLowerCase());
             
             // Date filtering: Match if contact has activity (message or conversation) on that date
@@ -1017,6 +1013,18 @@ export default function BulkMessagePage() {
             return matchesTag && matchesSearch && matchesPage && matchesDate;
         });
     }, [selectedTag, selectedPage, searchQuery, dateFilter, contacts, tags]);
+    
+    // Update pages list from contacts when contacts change
+    useEffect(() => {
+        const uniquePages = new Set<string>(["All Pages"]);
+        contacts.forEach(contact => {
+            const pageName = contact.page || contact.page_name || contact.pageName;
+            if (pageName) {
+                uniquePages.add(pageName);
+            }
+        });
+        setPages(Array.from(uniquePages).sort());
+    }, [contacts]);
 
     // Pagination Logic
     const totalPages = Math.ceil(filteredContacts.length / itemsPerPage);
@@ -2062,7 +2070,7 @@ export default function BulkMessagePage() {
                                 <button
                                     onClick={() => fileInputRef.current?.click()}
                                     className="text-zinc-400 hover:text-indigo-300 transition-colors bg-white/5 p-1.5 rounded-lg hover:bg-indigo-500/20 border border-transparent hover:border-indigo-500/30"
-                                    title="Attach file (max 25MB)"
+                                    title="Attach media (images, videos, audio, documents - max 25MB)"
                                 >
                                     <PaperclipIcon />
                                 </button>
