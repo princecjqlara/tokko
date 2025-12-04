@@ -30,23 +30,38 @@ export async function GET(request: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         console.log("[Stream Route] Stream started, initializing...");
+        const streamStartTime = Date.now();
+        const VERCEL_TIMEOUT = 280000; // 280 seconds (leave 20s buffer before Vercel's 300s limit)
         
-        // Set timeout to force completion
+        // Set timeout to force completion before Vercel timeout
         streamTimeoutId = setTimeout(() => {
           if (!streamCompleted) {
-            console.warn("⚠️ [Stream Route] Stream timeout reached, forcing completion...");
+            console.warn("⚠️ [Stream Route] Approaching Vercel timeout, forcing completion...");
             streamCompleted = true;
             try {
               send({ 
-                type: "error", 
-                message: "Stream timeout - fetch taking too long. Please try syncing again with fewer pages." 
+                type: "complete", 
+                message: "Sync partially completed due to timeout. Some pages may not have been processed. You can sync again to continue.",
+                totalContacts: existingContactCount + allContacts.length,
+                newContactsCount: allContacts.length
               });
               controller.close();
             } catch (err) {
               console.error("Error in timeout handler:", err);
             }
           }
-        }, STREAM_TIMEOUT);
+        }, VERCEL_TIMEOUT);
+        
+        // Helper to check if we're approaching timeout
+        const checkTimeout = () => {
+          const elapsed = Date.now() - streamStartTime;
+          const remaining = VERCEL_TIMEOUT - elapsed;
+          if (remaining < 30000) { // Less than 30 seconds remaining
+            console.warn(`⚠️ [Stream Route] Only ${Math.round(remaining/1000)}s remaining, will complete soon`);
+            return true;
+          }
+          return false;
+        };
         
         const send = (data: any) => {
           try {
