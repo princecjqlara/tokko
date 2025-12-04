@@ -301,4 +301,3 @@ async function triggerAutoFetch(pageId: string) {
     console.error("Error triggering auto-fetch:", error);
   }
 }
-
