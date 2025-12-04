@@ -623,6 +623,7 @@ export default function BulkMessagePage() {
                                     isFetchingRef.current = false;
                                     isConnectingRef.current = false;
                                     abortControllerRef.current = null;
+                                    // Keep hasFetchedRef as true since we completed successfully
                                     console.log(`✅ [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
                                     break;
                                 
@@ -630,12 +631,19 @@ export default function BulkMessagePage() {
                                     setFetchingProgress(prev => ({
                                         ...prev,
                                         isFetching: false,
-                                        message: `Error: ${data.message}`
+                                        message: `Error: ${data.message || "Unknown error occurred"}`
                                     }));
                                     setIsLoading(false);
                                     isFetchingRef.current = false;
                                     isConnectingRef.current = false;
                                     abortControllerRef.current = null;
+                                    // Reset hasFetchedRef on error to allow retry
+                                    hasFetchedRef.current = false;
+                                    if (userId) {
+                                        const storageKey = `hasFetched_${userId}`;
+                                        localStorage.removeItem(storageKey);
+                                    }
+                                    console.error(`❌ [Frontend] Fetch error: ${data.message}`);
                                     break;
                             }
                         } catch (e) {
@@ -653,9 +661,15 @@ export default function BulkMessagePage() {
                     message: error.message || "Error fetching contacts"
                 }));
                 setIsLoading(false);
+                // Reset refs to allow retry
+                isFetchingRef.current = false;
+                isConnectingRef.current = false;
+                hasFetchedRef.current = false; // Reset to allow manual retry
+            } else {
+                // AbortError means user cancelled, still reset refs
+                isFetchingRef.current = false;
+                isConnectingRef.current = false;
             }
-            isFetchingRef.current = false;
-            isConnectingRef.current = false;
             abortControllerRef.current = null;
         }
     }, [userId, contacts.length, fetchingProgress.totalContacts, selectedPage, pageData]);
@@ -816,9 +830,10 @@ export default function BulkMessagePage() {
                     // Job is running, reconnect to stream
                     console.log("[Frontend] Reconnecting to active job...");
                     // Continue to fetchContactsRealtime below
-                } else if (hasFetchedRef.current && storedHasFetched) {
-                    console.log("[Frontend] Already fetched for this user and no active job, skipping...");
-                    return;
+                } else if (hasFetchedRef.current && storedHasFetched && !fetchingProgress.isFetching) {
+                    console.log("[Frontend] Already fetched for this user and no active job, skipping automatic fetch...");
+                    // Don't return - still allow manual fetch if user wants
+                    // Only skip if we're not in a fetching state
                 } else {
                     console.log("[Frontend] Starting new contact fetch process...");
                 }
