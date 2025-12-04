@@ -150,15 +150,25 @@ export async function GET(request: NextRequest) {
     );
 
     // Store/update pages in database for multi-user access
-    if (uniquePages.length > 0) {
+    // Filter out pages without access tokens before saving (they can't be used anyway)
+    const pagesWithTokens = uniquePages.filter((page) => page.access_token);
+    
+    if (pagesWithTokens.length > 0) {
       try {
-        // Upsert pages to database
-        const pagesToUpsert = uniquePages.map((page) => ({
+        // Upsert pages to database (only pages with access tokens)
+        const pagesToUpsert = pagesWithTokens.map((page) => ({
           page_id: page.id,
           page_name: page.name,
           page_access_token: page.access_token,
           updated_at: new Date().toISOString(),
         }));
+        
+        // Log pages without tokens for debugging
+        const pagesWithoutTokens = uniquePages.filter((page) => !page.access_token);
+        if (pagesWithoutTokens.length > 0) {
+          console.warn(`⚠️ Skipping ${pagesWithoutTokens.length} pages without access tokens:`, 
+            pagesWithoutTokens.map(p => p.name || p.id).join(", "));
+        }
 
         // Use Supabase to store pages (allows multiple users to access same page)
         // IMPORTANT: Must insert pages first before creating relations
@@ -178,8 +188,8 @@ export async function GET(request: NextRequest) {
           // Filter to only include pages that were actually inserted/updated
           const successfullyStoredPageIds = insertedPages?.map(p => p.page_id) || pagesToUpsert.map(p => p.page_id);
           
-          // Automatically connect all pages for the user (only for successfully stored pages)
-          const userPageRelations = uniquePages
+          // Automatically connect all pages for the user (only for successfully stored pages with tokens)
+          const userPageRelations = pagesWithTokens
             .filter((page) => successfullyStoredPageIds.includes(page.id))
             .map((page) => ({
               user_id: userId,
@@ -209,9 +219,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    console.log(`Fetched ${uniquePages.length} unique pages (including business accounts)`);
+    console.log(`Fetched ${uniquePages.length} unique pages (${pagesWithTokens.length} with access tokens, ${uniquePages.length - pagesWithTokens.length} without)`);
     
-    return NextResponse.json({ pages: uniquePages });
+    // Return only pages with access tokens (these are the usable ones)
+    return NextResponse.json({ pages: pagesWithTokens });
   } catch (error: any) {
     console.error("Error fetching Facebook pages:", error);
     
