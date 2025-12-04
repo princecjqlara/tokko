@@ -904,22 +904,20 @@ export async function GET(request: NextRequest) {
                   
                   // Check if this contact was already seen across ALL pages (not just this page)
                   // This prevents counting the same contact multiple times if they appear in multiple pages
-                  if (globalSeenContactKeys.has(contactKey)) {
-                    // Contact already seen in a previous page - skip adding to allContacts but still save to DB
-                    // (DB upsert will handle duplicates, but we don't want to count them twice)
-                    contactsToSave.push(contactData);
-                    // Don't increment pageContacts or add to allContacts for duplicates across pages
-                    continue;
+                  const isDuplicateAcrossPages = globalSeenContactKeys.has(contactKey);
+                  
+                  if (!isDuplicateAcrossPages) {
+                    // New unique contact - mark as seen globally and add to count
+                    globalSeenContactKeys.add(contactKey);
+                    allContacts.push(contactData);
+                    pageContacts++;
                   }
-                  
-                  // Mark as processed (both locally and globally)
-                  processedContactKeys.add(contactKey);
-                  globalSeenContactKeys.add(contactKey);
-                  
-                  // Add to collections (only if it's a new unique contact)
-                  allContacts.push(contactData);
+                  // Always save to database (even if duplicate) - upsert will update if contact info changed
+                  // But don't count duplicates in allContacts.length
                   contactsToSave.push(contactData);
-                  pageContacts++;
+                  
+                  // Mark as processed locally (for this page)
+                  processedContactKeys.add(contactKey);
                   
                   // Send contact immediately for UI updates
                   const totalContacts = existingContactCount + allContacts.length;
