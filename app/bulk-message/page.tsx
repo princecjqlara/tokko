@@ -1804,8 +1804,8 @@ export default function BulkMessagePage() {
                                                 {fetchingProgress.isFetching && (
                                                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent flex-shrink-0"></div>
                                                 )}
-                                                <h3 className="text-sm font-semibold text-white truncate">Fetching Contacts in Real-Time</h3>
-                                                <div className="ml-auto flex items-center gap-2 flex-shrink-0">
+                                                <h3 className="text-sm font-semibold text-white truncate flex-1">Fetching Contacts in Real-Time</h3>
+                                                <div className="flex items-center gap-2 flex-shrink-0">
                                                     {fetchingProgress.isFetching && (
                                                         <>
                                                             <button
