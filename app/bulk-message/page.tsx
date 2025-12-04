@@ -573,7 +573,17 @@ export default function BulkMessagePage() {
                     abortControllerRef.current = new AbortController();
                 }
                 console.log("[Frontend] Starting to fetch contacts from Facebook API via stream...");
-                const response = await fetch("/api/facebook/contacts/stream", {
+                // Build fetch URL with optional page filter
+                let fetchUrl = "/api/facebook/contacts/stream";
+                if (selectedPage && selectedPage !== "All Pages") {
+                    // Find page ID from page name
+                    const selectedPageData = pageData.find((p: any) => p.name === selectedPage);
+                    if (selectedPageData?.id) {
+                        fetchUrl += `?pageId=${selectedPageData.id}`;
+                    }
+                }
+                
+                const response = await fetch(fetchUrl, {
                     signal: abortControllerRef.current.signal
                 });
                 
@@ -936,45 +946,29 @@ export default function BulkMessagePage() {
         }
     };
 
-    // Real-time webhook polling for new contacts
+    // Poll for new contacts and auto-fetch when new messages arrive
     useEffect(() => {
         if (status !== "authenticated" || !session) return;
 
-        let lastTimestamp = Date.now();
-        const pollInterval = setInterval(async () => {
+        let pollInterval = setInterval(async () => {
             try {
-                const response = await fetch(`/api/webhooks/facebook/events?since=${lastTimestamp}`);
-                if (response.ok) {
-                    const data = await response.json();
-                    const newEvents = data.events || [];
-                    
-                    if (newEvents.length > 0) {
-                        // Process new contact events
-                        const newContacts = newEvents
-                            .filter((e: any) => e.type === "new_contact")
-                            .map((e: any) => e.contact);
-
-                        if (newContacts.length > 0) {
-                            setContacts((prev) => {
-                                // Merge new contacts, avoiding duplicates
-                                const existingIds = new Set(prev.map((c) => c.id));
-                                const uniqueNewContacts = newContacts.filter(
-                                    (c: any) => !existingIds.has(c.id)
-                                );
-                                return [...uniqueNewContacts, ...prev];
-                            });
-                        }
-
-                        lastTimestamp = data.timestamp || Date.now();
+                // Check for pending fetch jobs (triggered by webhooks)
+                const jobResponse = await fetch("/api/facebook/contacts/background");
+                if (jobResponse.ok) {
+                    const jobData = await jobResponse.json();
+                    // If there's a pending job and we're not already fetching, start fetching
+                    if (jobData.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
+                        console.log("[Frontend] New message detected, starting auto-fetch...");
+                        fetchContactsRealtime();
                     }
                 }
             } catch (error) {
-                console.error("Error polling webhook events:", error);
+                console.error("Error checking for new messages:", error);
             }
-        }, 3000); // Poll every 3 seconds
+        }, 5000); // Poll every 5 seconds
 
         return () => clearInterval(pollInterval);
-    }, [status, session]);
+    }, [status, session, fetchingProgress.isFetching]);
 
     // All pages are automatically connected - no modal needed
 
@@ -1717,11 +1711,12 @@ export default function BulkMessagePage() {
                 {/* Contact List */}
                 <div className="space-y-2 min-h-[400px]">
                     {paginatedContacts.map((contact, index) => {
-                        const isSelected = selectedContactIds.includes(contact.id);
+                        const contactId = contact.id || contact.contact_id || contact.contactId;
+                        const isSelected = contactId && selectedContactIds.includes(contactId);
                         return (
                             <div
-                                key={contact.id}
-                                onClick={() => toggleSelection(contact.id)}
+                                key={contact.id || contact.contact_id || contact.contactId}
+                                onClick={() => toggleSelection(contactId)}
                                 style={{ animationDelay: `${index * 50}ms` }}
                                 className={`group relative flex cursor-pointer items-center gap-4 rounded-2xl border p-3 transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 backdrop-blur-sm ${isSelected
                                         ? "border-indigo-500/50 bg-indigo-500/10 shadow-[0_0_20px_-5px_rgba(99,102,241,0.2)]"

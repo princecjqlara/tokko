@@ -510,7 +510,8 @@ export async function GET(request: NextRequest) {
             });
 
             let pageContacts = 0;
-            const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates
+            const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates in this session
+            const processedContactKeys = new Set<string>(); // Track contacts already processed in this run
             
             for (const conversation of allConversations) {
               // Check if paused periodically while processing conversations
@@ -535,15 +536,20 @@ export async function GET(request: NextRequest) {
               
               const contact = participants.find((p: any) => p.id !== page.id);
               
-              if (contact) {
+                if (contact) {
                 // Create unique key for this contact on this page
                 const contactKey = `${contact.id}-${page.id}`;
                 
-                // Skip if we've already seen this contact
+                // Skip if we've already seen this contact in this session
                 if (seenContactIds.has(contactKey)) {
                   continue;
                 }
                 seenContactIds.add(contactKey);
+                
+                // Check if we've already processed this contact in this run
+                if (processedContactKeys.has(contactKey)) {
+                  continue;
+                }
                 
                 const contactMessages = messages.filter((msg: any) => msg.from?.id === contact.id);
                 const lastContactMessage = contactMessages.length > 0 ? contactMessages[0] : null;
@@ -618,9 +624,11 @@ export async function GET(request: NextRequest) {
                       const existingUpdateTime = existingContact.updated_at ? new Date(existingContact.updated_at).getTime() : 0;
                       const conversationUpdateTime = new Date(conversation.updated_time).getTime();
                       
-                      // Only process if conversation was updated (new messages) or if it's a new contact
-                      if (conversationUpdateTime <= existingUpdateTime) {
+                      // Only process if conversation was updated AFTER the last contact update (new messages)
+                      // Add 5 second buffer to account for timing differences
+                      if (conversationUpdateTime <= (existingUpdateTime + 5000)) {
                         shouldProcess = false;
+                        processedContactKeys.add(contactKey); // Mark as processed
                         // Skip this contact - no new messages
                         continue;
                       }
@@ -631,6 +639,7 @@ export async function GET(request: NextRequest) {
                   }
                   
                   if (shouldProcess) {
+                    processedContactKeys.add(contactKey); // Mark as processed
                     allContacts.push(contactData);
                     pageContacts++;
                     

@@ -264,22 +264,9 @@ async function triggerAutoFetch(pageId: string) {
           onConflict: "user_id",
         });
       
-      // Also trigger immediate fetch for this specific page via API
-      // This ensures new contacts are fetched right away
-      try {
-        const fetchUrl = `${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/facebook/contacts/stream?pageId=${pageId}`;
-        // Trigger fetch in background (don't wait)
-        fetch(fetchUrl, {
-          method: 'GET',
-          headers: {
-            'Cookie': '', // Will use session from request
-          },
-        }).catch(err => {
-          console.error(`Error triggering immediate fetch for page ${pageId}:`, err);
-        });
-      } catch (fetchErr) {
-        console.error(`Error setting up fetch for page ${pageId}:`, fetchErr);
-      }
+      // Note: Frontend will poll for new contacts via the existing polling mechanism
+      // The fetch_jobs table entry will trigger the frontend to start fetching
+      // We don't trigger server-side fetch here because it requires user session
       
       console.log(`✅ Triggered auto-fetch for user ${userId} due to new message on page ${pageId}`);
     }
