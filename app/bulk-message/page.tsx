@@ -1,10 +1,10 @@
 "use client";
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
+import { signIn, signOut, useSession } from "next-auth/react";
 
-// --- Mock Data Generators ---
-const INITIAL_TAGS = ["All", "Customers", "Leads", "VIP", "Team"];
-const PAGES = ["All Pages", "TechCorp Main", "TechCorp Support", "Personal Brand"];
+// --- Default Filter Options ---
+// Pages will be fetched from Facebook API when user is authenticated
 
 // --- Icons ---
 const SearchIcon = () => (
@@ -89,61 +89,881 @@ const FileIcon = () => (
 );
 
 export default function BulkMessagePage() {
-    const [tags, setTags] = useState(INITIAL_TAGS);
+    const { data: session, status } = useSession();
+    const [tags, setTags] = useState(["All"]);
     const [selectedTag, setSelectedTag] = useState("All");
     const [selectedPage, setSelectedPage] = useState("All Pages");
     const [searchQuery, setSearchQuery] = useState("");
+    const [pageSearchQuery, setPageSearchQuery] = useState("");
+    const [showPageDropdown, setShowPageDropdown] = useState(false);
     const [dateFilter, setDateFilter] = useState("");
     const [selectedContactIds, setSelectedContactIds] = useState<number[]>([]);
     const [message, setMessage] = useState("");
     const [contacts, setContacts] = useState<any[]>([]);
+    const [pages, setPages] = useState<string[]>(["All Pages"]);
+    const [pageData, setPageData] = useState<any[]>([]); // Store full page objects
+    const [availablePages, setAvailablePages] = useState<any[]>([]); // All available pages from Facebook
+    const [connectedPageIds, setConnectedPageIds] = useState<string[]>([]); // All pages are automatically connected
     const [isClient, setIsClient] = useState(false);
+    const [isLoading, setIsLoading] = useState(false);
+    const [isSending, setIsSending] = useState(false);
     const [scheduleDate, setScheduleDate] = useState("");
     const [attachedFile, setAttachedFile] = useState<File | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const [showProfileDropdown, setShowProfileDropdown] = useState(false);
+    const profileDropdownRef = useRef<HTMLDivElement>(null);
+    
+    // Real-time fetching state
+    const [fetchingProgress, setFetchingProgress] = useState<{
+        isFetching: boolean;
+        isPaused: boolean;
+        currentPage?: string;
+        currentPageNumber?: number;
+        totalPages?: number;
+        totalContacts: number;
+        message?: string;
+        recentContacts: any[];
+        isCollapsed: boolean;
+    }>({
+        isFetching: false,
+        isPaused: false,
+        totalContacts: 0,
+        recentContacts: [],
+        isCollapsed: false
+    });
+    
+    // Track if fetch is already in progress to prevent reload loops
+    const isFetchingRef = useRef(false);
+    const hasFetchedRef = useRef(false);
+    const abortControllerRef = useRef<AbortController | null>(null);
+    const isPausedRef = useRef(false);
+    const isConnectingRef = useRef(false); // Track if we're in the process of connecting
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 8;
+    
+    // Modal states
+    const [showReconnectModal, setShowReconnectModal] = useState(false);
+    const [pageModalCurrentPage, setPageModalCurrentPage] = useState(1);
+    const [connectedPagesCurrentPage, setConnectedPagesCurrentPage] = useState(1);
+    const connectedPagesItemsPerPage = 5;
+    
+    // Page selection states
+    const [selectedPageIdsForDisconnect, setSelectedPageIdsForDisconnect] = useState<string[]>([]);
+    const [selectedAvailablePageIds, setSelectedAvailablePageIds] = useState<string[]>([]);
 
     // Hydration Fix: Load data only on client
     useEffect(() => {
         setIsClient(true);
-        const roles = ["Product Manager", "CEO", "Lead Developer", "Marketing Head", "Freelancer", "Designer", "Investor"];
-        const availableTags = ["Team", "VIP", "Customers", "Leads"];
-        const pages = ["TechCorp Main", "TechCorp Support", "Personal Brand"];
-
-        const generated = Array.from({ length: 100 }, (_, i) => {
-            const numTags = Math.floor(Math.random() * 2) + 1;
-            const shuffledTags = [...availableTags].sort(() => 0.5 - Math.random());
-            const contactTags = shuffledTags.slice(0, numTags);
-
-            return {
-                id: i + 1,
-                name: `User ${i + 1}`,
-                role: roles[i % roles.length],
-                tags: contactTags,
-                avatar: String.fromCharCode(65 + (i % 26)) + String.fromCharCode(65 + ((i + 1) % 26)),
-                page: pages[i % pages.length],
-                date: `2023-10-${String((i % 30) + 1).padStart(2, '0')}`
-            };
-        });
-        setContacts(generated);
+        // Initialize with empty contacts array - data will be loaded from API/database
+        setContacts([]);
     }, []);
+
+    // Close profile dropdown when clicking outside
+    useEffect(() => {
+        const handleClickOutside = (event: MouseEvent) => {
+            if (profileDropdownRef.current && !profileDropdownRef.current.contains(event.target as Node)) {
+                setShowProfileDropdown(false);
+            }
+        };
+
+        if (showProfileDropdown) {
+            document.addEventListener("mousedown", handleClickOutside);
+        }
+
+        return () => {
+            document.removeEventListener("mousedown", handleClickOutside);
+        };
+    }, [showProfileDropdown]);
+
+    // Handle reconnect
+    const handleReconnect = () => {
+        setShowProfileDropdown(false);
+        // Open popup window for Facebook login
+        const width = 600;
+        const height = 700;
+        const left = (window.screen.width - width) / 2;
+        const top = (window.screen.height - height) / 2;
+        
+        // Use popup callback URL
+        const popup = window.open(
+            `/api/auth/signin/facebook?callbackUrl=${encodeURIComponent("/api/facebook/callback-popup?popup=true")}`,
+            'facebook-login',
+            `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+        );
+
+        // Poll to check if popup is closed (user completed auth)
+        const checkClosed = setInterval(() => {
+            if (popup?.closed) {
+                clearInterval(checkClosed);
+                // Reload page to check for new session
+                window.location.reload();
+            }
+        }, 500);
+
+        // Also listen for messages from popup
+        const messageHandler = (event: MessageEvent) => {
+            if (event.data?.type === 'AUTH_SUCCESS') {
+                clearInterval(checkClosed);
+                window.removeEventListener('message', messageHandler);
+                window.location.reload();
+            }
+        };
+        window.addEventListener('message', messageHandler);
+    };
+
+    // Handle sign out
+    const handleSignOut = async () => {
+        setShowProfileDropdown(false);
+        // Cancel any ongoing fetch
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        await signOut({ callbackUrl: "/" });
+    };
+    
+    // Handle stop fetching
+    const handleStopFetching = () => {
+        if (abortControllerRef.current) {
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        isFetchingRef.current = false;
+        isPausedRef.current = false;
+        setFetchingProgress(prev => ({
+            ...prev,
+            isFetching: false,
+            isPaused: false,
+            message: "Fetching stopped by user"
+        }));
+        setIsLoading(false);
+    };
+    
+    // Handle pause/resume fetching
+    const handlePauseResume = async () => {
+        const newPausedState = !fetchingProgress.isPaused;
+        
+        try {
+            // Update pause state in database
+            const response = await fetch("/api/facebook/contacts/pause", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ isPaused: newPausedState }),
+            });
+
+            if (response.ok) {
+                isPausedRef.current = newPausedState;
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    isPaused: newPausedState,
+                    message: newPausedState 
+                        ? "Fetching paused. Click resume to continue."
+                        : "Resuming fetch..."
+                }));
+            } else {
+                console.error("Failed to update pause state:", await response.text());
+                // Still update UI even if API call fails
+                isPausedRef.current = newPausedState;
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    isPaused: newPausedState,
+                    message: newPausedState 
+                        ? "Fetching paused (local). Click resume to continue."
+                        : "Resuming fetch..."
+                }));
+            }
+        } catch (error) {
+            console.error("Error updating pause state:", error);
+            // Still update UI even if API call fails
+            isPausedRef.current = newPausedState;
+            setFetchingProgress(prev => ({
+                ...prev,
+                isPaused: newPausedState,
+                message: newPausedState 
+                    ? "Fetching paused (local). Click resume to continue."
+                    : "Resuming fetch..."
+            }));
+        }
+    };
+
+    // Auto-fetch pages and contacts when user is signed in (only once)
+    // Use stable userId to prevent dependency array size changes
+    const userId = session?.user?.id || null;
+    
+    useEffect(() => {
+        if (status !== "authenticated" || !session || !userId) {
+            console.log("[Frontend] Not authenticated yet, skipping...");
+            return;
+        }
+        
+        // Always load existing contacts from database first on mount/refresh
+        const loadExistingContacts = async () => {
+            try {
+                const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
+                if (existingResponse.ok) {
+                    const existingData = await existingResponse.json();
+                    if (existingData.contacts && existingData.contacts.length > 0) {
+                        console.log(`[Frontend] Loaded ${existingData.contacts.length} existing contacts from database`);
+                        setContacts(existingData.contacts);
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            totalContacts: existingData.contacts.length,
+                            message: `Loaded ${existingData.contacts.length} contacts from database`
+                        }));
+                        return existingData.contacts.length;
+                    }
+                }
+            } catch (e) {
+                console.error("[Frontend] Error loading existing contacts:", e);
+            }
+            return 0;
+        };
+        
+        // First, check if there's a running job in the database
+        const checkAndReconnect = async () => {
+            try {
+                const jobResponse = await fetch("/api/facebook/contacts/pause");
+                if (jobResponse.ok) {
+                    const jobData = await jobResponse.json();
+                    const job = jobData.job;
+                    
+                    // If there's a running or paused job, we should reconnect
+                    if (job && (job.status === "running" || job.status === "paused")) {
+                        console.log("[Frontend] Found active job, will reconnect to stream");
+                        // Load existing contacts first
+                        try {
+                            const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
+                            if (existingResponse.ok) {
+                                const existingData = await existingResponse.json();
+                                if (existingData.contacts && existingData.contacts.length > 0) {
+                                    console.log(`[Frontend] Loaded ${existingData.contacts.length} existing contacts from database`);
+                                    setContacts(existingData.contacts);
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        totalContacts: existingData.contacts.length,
+                                        isFetching: job.status === "running" && !job.is_paused,
+                                        isPaused: job.is_paused || job.status === "paused",
+                                        currentPage: job.current_page_name,
+                                        // NEVER decrease page number - only move forward
+                                        currentPageNumber: job.current_page_number !== undefined && job.current_page_number !== null
+                                            ? Math.max(job.current_page_number, prev.currentPageNumber || 0)
+                                            : prev.currentPageNumber,
+                                        totalPages: job.total_pages,
+                                        message: job.message || `Resuming fetch... (${existingData.contacts.length} contacts loaded)`
+                                    }));
+                                }
+                            }
+                        } catch (e) {
+                            console.error("[Frontend] Error loading existing contacts:", e);
+                        }
+                        
+                        // Reconnect to stream if job is running and not paused
+                        // Only reconnect if we're NOT already fetching (to prevent duplicate connections)
+                        if (job.status === "running" && !job.is_paused && !isFetchingRef.current) {
+                            // Only reset hasFetchedRef if we're not already connected
+                            // Don't reset isFetchingRef - let fetchContactsRealtime handle that
+                            hasFetchedRef.current = false;
+                            return true; // Signal that we should start fetching
+                        } else {
+                            // Job is paused, just update UI
+                            setFetchingProgress(prev => ({
+                                ...prev,
+                                isFetching: false,
+                                isPaused: true,
+                                // NEVER reset totalContacts to 0 - always preserve the maximum count
+                                totalContacts: job.total_contacts !== undefined && job.total_contacts !== null
+                                    ? Math.max(job.total_contacts, prev.totalContacts, contacts.length)
+                                    : Math.max(prev.totalContacts, contacts.length),
+                                message: "Fetching paused. Click resume to continue."
+                            }));
+                            return false; // Don't start fetching
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("[Frontend] Error checking job status:", error);
+            }
+            return false;
+        };
+        
+        // Check localStorage to see if we've already fetched for this user
+        const storageKey = `hasFetched_${userId}`;
+        
+        // Load existing contacts first
+        loadExistingContacts().then(existingCount => {
+            const storedHasFetched = userId ? localStorage.getItem(storageKey) === 'true' : false;
+            
+            console.log("[Frontend] useEffect triggered:", {
+                status,
+                userId,
+                isFetchingRef: isFetchingRef.current,
+                hasFetchedRef: hasFetchedRef.current,
+                storedHasFetched,
+                existingContactsCount: existingCount
+            });
+            
+            // Prevent multiple simultaneous fetches
+            if (isFetchingRef.current) {
+                console.log("[Frontend] Fetch already in progress, skipping...");
+                return;
+            }
+            
+            // Check for running job first (before checking hasFetchedRef)
+            checkAndReconnect().then(shouldReconnect => {
+                if (shouldReconnect) {
+                    // Job is running, reconnect to stream
+                    console.log("[Frontend] Reconnecting to active job...");
+                    // Continue to fetchContactsRealtime below
+                } else if (hasFetchedRef.current && storedHasFetched) {
+                    console.log("[Frontend] Already fetched for this user and no active job, skipping...");
+                    return;
+                } else {
+                    console.log("[Frontend] Starting new contact fetch process...");
+                }
+                
+                // Now proceed with fetching if needed
+                if (status === "authenticated" && session) {
+                    // Fetch pages first
+                    fetch("/api/facebook/pages").then(pagesResponse => {
+                        let fetchedPages: any[] = [];
+                        if (pagesResponse.ok) {
+                            return pagesResponse.json().then(pagesData => {
+                                fetchedPages = pagesData.pages || [];
+                                
+                                // All fetched pages are automatically connected
+                                const allPageIds = fetchedPages.map((p: any) => p.id);
+                                setConnectedPageIds(allPageIds);
+                                setAvailablePages(fetchedPages);
+                                setPageData(fetchedPages);
+                                const pageNames = ["All Pages", ...fetchedPages.map((p: any) => p.name)];
+                                setPages(pageNames);
+                                
+                                // Then fetch contacts in real-time (only if not already fetching and should fetch)
+                                if (!isFetchingRef.current && (shouldReconnect || !storedHasFetched)) {
+                                    fetchContactsRealtime();
+                                }
+                            });
+                        }
+                    }).catch(error => {
+                        console.error("Error fetching data:", error);
+                        setIsLoading(false);
+                        isFetchingRef.current = false;
+                    });
+                }
+            });
+        });
+        
+        const fetchContactsRealtime = async () => {
+            // Prevent multiple simultaneous calls - check both refs
+            if (isFetchingRef.current || isConnectingRef.current) {
+                console.log("[Frontend] fetchContactsRealtime already in progress, skipping duplicate call", {
+                    isFetching: isFetchingRef.current,
+                    isConnecting: isConnectingRef.current
+                });
+                return;
+            }
+            
+            // Abort any existing connection first
+            if (abortControllerRef.current) {
+                console.log("[Frontend] Aborting existing connection before starting new one");
+                abortControllerRef.current.abort();
+                abortControllerRef.current = null;
+            }
+            
+            // Mark as connecting immediately to prevent race conditions
+            isConnectingRef.current = true;
+            isFetchingRef.current = true;
+            hasFetchedRef.current = true;
+            if (userId) localStorage.setItem(storageKey, 'true');
+            
+            // Get current contact count before starting - preserve existing count
+            const currentContactCount = contacts.length || fetchingProgress.totalContacts || 0;
+            
+            setIsLoading(true);
+            setFetchingProgress(prev => ({
+                ...prev,
+                isFetching: true,
+                // NEVER reset totalContacts to 0 if we already have contacts - always preserve the count
+                totalContacts: Math.max(currentContactCount, prev.totalContacts),
+                recentContacts: prev.recentContacts || [],
+                message: currentContactCount > 0 
+                    ? `Resuming fetch... (${currentContactCount} contacts already loaded)`
+                    : "Starting to fetch contacts..."
+            }));
+            
+            // Load existing contacts from database first (but still use stream for real-time updates)
+            try {
+                console.log("[Frontend] Checking for existing contacts in database...");
+                const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
+                if (existingResponse.ok) {
+                    const existingData = await existingResponse.json();
+                    console.log(`[Frontend] Received ${existingData.contacts?.length || 0} contacts from API`);
+                    if (existingData.contacts && existingData.contacts.length > 0) {
+                        console.log(`[Frontend] Found ${existingData.contacts.length} existing contacts. Loading them into UI...`);
+                        setContacts(existingData.contacts);
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            totalContacts: existingData.contacts.length,
+                            message: `Loaded ${existingData.contacts.length} existing contacts. Fetching new ones...`
+                        }));
+                        // Continue to stream route to get real-time updates and fetch any new contacts
+                    } else {
+                        console.log("[Frontend] No existing contacts found. Will fetch from Facebook API via stream...");
+                    }
+                } else {
+                    const errorText = await existingResponse.text();
+                    let errorData;
+                    try {
+                        errorData = JSON.parse(errorText);
+                    } catch {
+                        errorData = { error: errorText };
+                    }
+                    
+                    console.error("[Frontend] Error loading contacts:", errorData);
+                    
+                    // Check if it's a rate limit error
+                    if (errorData.error === "Facebook API rate limit reached" || errorData.details?.includes("rate limit")) {
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            isFetching: false,
+                            message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
+                        }));
+                        setIsLoading(false);
+                        isFetchingRef.current = false;
+                        return;
+                    }
+                }
+            } catch (e) {
+                console.error("[Frontend] Error loading existing contacts:", e);
+                console.log("No existing contacts found, starting fresh");
+            }
+
+            // Create abort controller for cancellation
+            abortControllerRef.current = new AbortController();
+
+            try {
+                if (!abortControllerRef.current) {
+                    abortControllerRef.current = new AbortController();
+                }
+                console.log("[Frontend] Starting to fetch contacts from Facebook API via stream...");
+                const response = await fetch("/api/facebook/contacts/stream", {
+                    signal: abortControllerRef.current.signal
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error("[Frontend] Stream response not OK:", response.status, errorText);
+                    throw new Error(`Failed to start stream: ${response.status}`);
+                }
+                
+                console.log("[Frontend] Stream connection established. Reading data...");
+                const reader = response.body?.getReader();
+                const decoder = new TextDecoder();
+
+                if (!reader) {
+                    throw new Error("Stream not available");
+                }
+
+                let buffer = "";
+                const recentContacts: any[] = [];
+
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+
+                    buffer += decoder.decode(value, { stream: true });
+                    const lines = buffer.split("\n");
+                    buffer = lines.pop() || "";
+
+                    for (const line of lines) {
+                        if (line.startsWith("data: ")) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                
+                                switch (data.type) {
+                                    case "status":
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            message: data.message
+                                        }));
+                                        break;
+                                    
+                                    case "pages_fetched":
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            totalPages: data.totalPages,
+                                            message: data.message
+                                        }));
+                                        break;
+                                    
+                                    case "page_start":
+                                        // Only update page info when a new page actually starts
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            currentPage: data.pageName || prev.currentPage,
+                                            // NEVER decrease page number - only move forward
+                                            currentPageNumber: data.currentPage !== undefined 
+                                                ? Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                                : prev.currentPageNumber,
+                                            totalPages: data.totalPages || prev.totalPages,
+                                            message: data.message || prev.message
+                                        }));
+                                        break;
+                                    
+                                    case "page_conversations":
+                                        console.log("[Frontend] Page conversations:", data.conversationsCount, "in", data.pageName);
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            message: `Found ${data.conversationsCount} conversations in ${data.pageName}`
+                                        }));
+                                        break;
+                                    
+                                    case "contact":
+                                        // Add contact immediately to the list
+                                        setContacts(prev => {
+                                            // Avoid duplicates based on contact_id and page_id
+                                            const exists = prev.find(c => 
+                                                (c.id === data.contact.id || c.contact_id === data.contact.id) && 
+                                                (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId)
+                                            );
+                                            if (exists) {
+                                                // Update existing contact with new data
+                                                return prev.map(c => 
+                                                    ((c.id === data.contact.id || c.contact_id === data.contact.id) && 
+                                                     (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId))
+                                                        ? { ...c, ...data.contact }
+                                                        : c
+                                                );
+                                            }
+                                            return [data.contact, ...prev];
+                                        });
+                                        
+                                        // Track recent contacts for animation
+                                        recentContacts.unshift(data.contact);
+                                        if (recentContacts.length > 5) recentContacts.pop();
+                                        
+                                        // Update progress with contact count - log every 100 contacts
+                                        if (data.totalContacts % 100 === 0) {
+                                            console.log("[Frontend] Total contacts so far:", data.totalContacts);
+                                        }
+                                        
+                                        // Calculate the maximum total to ensure count never decreases
+                                        const streamTotal = Math.max(data.totalContacts || 0, contacts.length);
+                                        
+                                        setFetchingProgress(prev => {
+                                            const finalTotal = Math.max(streamTotal, prev.totalContacts, contacts.length);
+                                            // DON'T update page info from contact events - only update count
+                                            // Page info should only change on page_start/page_complete events
+                                            // Only update message every 50 contacts to reduce UI flicker
+                                            const shouldUpdateMessage = finalTotal % 50 === 0 || prev.totalContacts === 0;
+                                            return {
+                                                ...prev,
+                                                // NEVER decrease totalContacts - always use maximum
+                                                totalContacts: finalTotal,
+                                                recentContacts: [...recentContacts],
+                                                // Only update message periodically to avoid constant UI flicker
+                                                // Keep the current page name stable - don't change it on every contact
+                                                message: shouldUpdateMessage && prev.currentPage 
+                                                    ? `Processing ${prev.currentPage}... Found ${finalTotal} contacts so far...`
+                                                    : prev.message || (prev.currentPage 
+                                                        ? `Processing ${prev.currentPage}...`
+                                                        : `Found ${finalTotal} contacts so far...`),
+                                                // Don't update page number or page name from contact events
+                                                // Only update totalPages if provided
+                                                ...(data.totalPages !== undefined && { totalPages: data.totalPages })
+                                            };
+                                        });
+                                        
+                                        // Extract tags
+                                        setTags(prev => {
+                                            const allTags = new Set(prev);
+                                            data.contact.tags?.forEach((tag: string) => allTags.add(tag));
+                                            return Array.from(allTags);
+                                        });
+                                        break;
+                                    
+                                    case "page_complete":
+                                        // Ensure total never decreases
+                                        const pageCompleteTotal = Math.max(data.totalContacts || 0, contacts.length);
+                                        setFetchingProgress(prev => {
+                                            const finalTotal = Math.max(pageCompleteTotal, prev.totalContacts, contacts.length);
+                                            // NEVER decrease page number - only move forward
+                                            const newPageNumber = data.currentPage !== undefined 
+                                                ? Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                                : prev.currentPageNumber;
+                                            return {
+                                                ...prev,
+                                                totalContacts: finalTotal,
+                                                // NEVER decrease page number - only move forward
+                                                ...(data.currentPage !== undefined && { currentPageNumber: newPageNumber }),
+                                                message: `✓ ${data.pageName}: ${data.contactsCount} contacts (Total: ${finalTotal})`
+                                            };
+                                        });
+                                        break;
+                                    
+                                    case "page_error":
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            message: `⚠ ${data.pageName}: ${data.error}`
+                                        }));
+                                        break;
+                                    
+                                    case "complete":
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            isFetching: false,
+                                            message: data.message,
+                                            // NEVER decrease totalContacts - always use maximum of all sources
+                                            totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length)
+                                        }));
+                                        setIsLoading(false);
+                                        isFetchingRef.current = false;
+                                        isConnectingRef.current = false;
+                                        abortControllerRef.current = null;
+                                        break;
+                                    
+                                    case "error":
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            isFetching: false,
+                                            message: `Error: ${data.message}`
+                                        }));
+                                        setIsLoading(false);
+                                        isFetchingRef.current = false;
+                                        isConnectingRef.current = false;
+                                        abortControllerRef.current = null;
+                                        break;
+                                }
+                            } catch (e) {
+                                console.error("Error parsing SSE data:", e);
+                            }
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("Error fetching contacts:", error);
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    isFetching: false,
+                    message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+                }));
+                setIsLoading(false);
+                isFetchingRef.current = false;
+                isConnectingRef.current = false;
+            }
+        };
+        
+        // Cleanup function to reset refs on unmount
+        return () => {
+            // Don't reset hasFetchedRef - we want to prevent refetching on re-renders
+        };
+    }, [status, userId]); // Use stable userId variable to keep array size constant
+    
+    // Poll for job status and update UI (but don't trigger new connections)
+    useEffect(() => {
+        if (status !== "authenticated" || !userId) return;
+        
+        const pollJobStatus = async () => {
+            try {
+                const response = await fetch("/api/facebook/contacts/pause");
+                if (response.ok) {
+                    const data = await response.json();
+                    const job = data.job;
+                    
+                    if (job && (job.status === "running" || job.status === "paused")) {
+                        // Only update UI if we're not already fetching (to avoid conflicts)
+                        if (!isFetchingRef.current) {
+                            // Update UI with job status from database
+                            setFetchingProgress(prev => ({
+                                ...prev,
+                                isFetching: job.status === "running" && !job.is_paused,
+                                isPaused: job.is_paused || job.status === "paused",
+                                // NEVER reset totalContacts to 0 - always preserve the maximum count
+                                totalContacts: job.total_contacts !== undefined && job.total_contacts !== null
+                                    ? Math.max(job.total_contacts, prev.totalContacts, contacts.length)
+                                    : Math.max(prev.totalContacts, contacts.length),
+                                currentPage: job.current_page_name || prev.currentPage,
+                                // NEVER decrease page number - only move forward
+                                currentPageNumber: job.current_page_number !== undefined && job.current_page_number !== null
+                                    ? Math.max(job.current_page_number, prev.currentPageNumber || 0)
+                                    : prev.currentPageNumber,
+                                totalPages: job.total_pages || prev.totalPages,
+                                message: job.message || "Fetching in background..."
+                            }));
+                            
+                            // Sync pause state
+                            isPausedRef.current = job.is_paused || false;
+                        } else {
+                            // We're connected, just sync the pause state and update progress
+                            if (job.is_paused !== fetchingProgress.isPaused) {
+                                isPausedRef.current = job.is_paused || false;
+                                setFetchingProgress(prev => ({
+                                    ...prev,
+                                    isPaused: job.is_paused || false,
+                                    message: job.is_paused 
+                                        ? "Fetching paused. Click resume to continue."
+                                        : prev.message
+                                }));
+                            }
+                            
+                            // Update progress from job (but don't override if stream is sending updates)
+                            // Always update, but never decrease the count - preserve maximum
+                            if (job.total_contacts !== undefined && job.total_contacts !== null) {
+                                setFetchingProgress(prev => ({
+                                    ...prev,
+                                    // NEVER decrease totalContacts - always use maximum of all sources
+                                    totalContacts: Math.max(prev.totalContacts, job.total_contacts, contacts.length),
+                                    currentPage: job.current_page_name || prev.currentPage,
+                                    // NEVER decrease page number - only move forward
+                                    currentPageNumber: job.current_page_number !== undefined && job.current_page_number !== null
+                                        ? Math.max(job.current_page_number, prev.currentPageNumber || 0)
+                                        : prev.currentPageNumber,
+                                    totalPages: job.total_pages || prev.totalPages,
+                                    message: job.message || prev.message
+                                }));
+                            }
+                        }
+                    } else if (job && job.status === "completed") {
+                        // Job completed, update UI
+                        if (fetchingProgress.isFetching) {
+                            setFetchingProgress(prev => ({
+                                ...prev,
+                                isFetching: false,
+                                // NEVER reset totalContacts to 0 - always preserve the maximum count
+                                totalContacts: job.total_contacts !== undefined && job.total_contacts !== null
+                                    ? Math.max(job.total_contacts, prev.totalContacts, contacts.length)
+                                    : Math.max(prev.totalContacts, contacts.length),
+                                message: job.message || "Fetching completed"
+                            }));
+                            setIsLoading(false);
+                            isFetchingRef.current = false;
+                        }
+                    } else if (!job) {
+                        // Job doesn't exist or was cleared - preserve the count from contacts array
+                        // Don't reset if we have contacts
+                        if (contacts.length > 0) {
+                            setFetchingProgress(prev => ({
+                                ...prev,
+                                // Preserve the maximum count - never reset to 0 if we have contacts
+                                totalContacts: Math.max(prev.totalContacts, contacts.length),
+                                isFetching: false
+                            }));
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("[Frontend] Error polling job status:", error);
+            }
+        };
+        
+        // Poll every 3 seconds (less frequent to avoid conflicts)
+        const interval = setInterval(pollJobStatus, 3000);
+        
+        // Poll immediately
+        pollJobStatus();
+        
+        return () => clearInterval(interval);
+    }, [status, userId]); // Removed fetchingProgress from deps to avoid re-triggering
+    
+    // Manual trigger for background fetch
+    const handleStartBackgroundFetch = async () => {
+        if (isFetchingRef.current) {
+            console.log("Fetch already in progress");
+            return;
+        }
+        
+        // Reset refs to allow new fetch
+        hasFetchedRef.current = false;
+        isFetchingRef.current = false;
+        
+        // Trigger background job (server-side)
+        try {
+            const response = await fetch("/api/facebook/contacts/background", {
+                method: "POST"
+            });
+            if (response.ok) {
+                console.log("Background fetch started");
+            }
+        } catch (error) {
+            console.error("Error starting background fetch:", error);
+        }
+    };
+
+    // Real-time webhook polling for new contacts
+    useEffect(() => {
+        if (status !== "authenticated" || !session) return;
+
+        let lastTimestamp = Date.now();
+        const pollInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/webhooks/facebook/events?since=${lastTimestamp}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    const newEvents = data.events || [];
+                    
+                    if (newEvents.length > 0) {
+                        // Process new contact events
+                        const newContacts = newEvents
+                            .filter((e: any) => e.type === "new_contact")
+                            .map((e: any) => e.contact);
+
+                        if (newContacts.length > 0) {
+                            setContacts((prev) => {
+                                // Merge new contacts, avoiding duplicates
+                                const existingIds = new Set(prev.map((c) => c.id));
+                                const uniqueNewContacts = newContacts.filter(
+                                    (c: any) => !existingIds.has(c.id)
+                                );
+                                return [...uniqueNewContacts, ...prev];
+                            });
+                        }
+
+                        lastTimestamp = data.timestamp || Date.now();
+                    }
+                }
+            } catch (error) {
+                console.error("Error polling webhook events:", error);
+            }
+        }, 3000); // Poll every 3 seconds
+
+        return () => clearInterval(pollInterval);
+    }, [status, session]);
+
+    // All pages are automatically connected - no modal needed
 
     // Reset pagination when filters change
     useEffect(() => {
         setCurrentPage(1);
     }, [selectedTag, selectedPage, searchQuery, dateFilter]);
 
-    // Filter contacts
+    // Computed total contacts - always use maximum to prevent countdown/reset
+    // This ensures the count never decreases, even if stream or polling resets
+    const displayTotalContacts = useMemo(() => {
+        return Math.max(
+            fetchingProgress.totalContacts || 0,
+            contacts.length || 0
+        );
+    }, [fetchingProgress.totalContacts, contacts.length]);
+
+    // Filter contacts - show contacts from all connected pages by default, or filter by selected page
     const filteredContacts = useMemo(() => {
         return contacts.filter((contact) => {
             const matchesTag = selectedTag === "All" || contact.tags.includes(selectedTag);
+            
+            // Page filtering: "All Pages" shows everything, otherwise filter by selected page
             const matchesPage = selectedPage === "All Pages" || contact.page === selectedPage;
+            
             const matchesSearch = contact.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                contact.role.toLowerCase().includes(searchQuery.toLowerCase());
-            const matchesDate = !dateFilter || contact.date === dateFilter;
+                contact.role?.toLowerCase().includes(searchQuery.toLowerCase());
+            
+            // Date filtering: Match if contact has activity (message or conversation) on that date
+            // Use lastContactMessageDate if available (contact sent message), otherwise use date (conversation date)
+            const contactMessageDate = contact.lastContactMessageDate || contact.date;
+            const matchesDate = !dateFilter || contactMessageDate === dateFilter;
 
             return matchesTag && matchesSearch && matchesPage && matchesDate;
         });
@@ -155,6 +975,69 @@ export default function BulkMessagePage() {
         (currentPage - 1) * itemsPerPage,
         currentPage * itemsPerPage
     );
+    
+    // Modal computed values
+    const filteredAvailablePages = useMemo(() => {
+        return availablePages.filter((page: any) => 
+            page.name.toLowerCase().includes(pageSearchQuery.toLowerCase())
+        );
+    }, [availablePages, pageSearchQuery]);
+    
+    const modalItemsPerPage = 5;
+    const modalTotalPages = Math.ceil(filteredAvailablePages.length / modalItemsPerPage);
+    const paginatedModalPages = filteredAvailablePages.slice(
+        (pageModalCurrentPage - 1) * modalItemsPerPage,
+        pageModalCurrentPage * modalItemsPerPage
+    );
+    
+    // Page selection functions
+    const clearConnectedPageSelection = () => {
+        setSelectedPageIdsForDisconnect([]);
+    };
+    
+    const selectAllConnectedPages = () => {
+        setSelectedPageIdsForDisconnect([...connectedPageIds]);
+    };
+    
+    const toggleConnectedPageSelection = (pageId: string) => {
+        setSelectedPageIdsForDisconnect(prev => 
+            prev.includes(pageId) 
+                ? prev.filter(id => id !== pageId)
+                : [...prev, pageId]
+        );
+    };
+    
+    const handleBulkDisconnect = async () => {
+        if (selectedPageIdsForDisconnect.length === 0) return;
+        // Implementation would go here
+        console.log("Bulk disconnect:", selectedPageIdsForDisconnect);
+        setSelectedPageIdsForDisconnect([]);
+    };
+    
+    const clearAvailablePageSelection = () => {
+        setSelectedAvailablePageIds([]);
+    };
+    
+    const selectAllAvailablePages = () => {
+        const unconnectedPages = filteredAvailablePages
+            .filter((p: any) => !connectedPageIds.includes(p.id))
+            .map((p: any) => p.id);
+        setSelectedAvailablePageIds(unconnectedPages);
+    };
+    
+    const handleBulkConnectAvailablePages = async () => {
+        if (selectedAvailablePageIds.length === 0) return;
+        // Implementation would go here
+        console.log("Bulk connect:", selectedAvailablePageIds);
+        setSelectedAvailablePageIds([]);
+    };
+    
+    const handleBulkDeleteAvailablePages = async () => {
+        if (selectedAvailablePageIds.length === 0) return;
+        // Implementation would go here
+        console.log("Bulk delete:", selectedAvailablePageIds);
+        setSelectedAvailablePageIds([]);
+    };
 
     const getPageNumbers = () => {
         const pageNumbers = [];
@@ -208,12 +1091,36 @@ export default function BulkMessagePage() {
         setSelectedContactIds([]);
     };
 
-    const handleDelete = () => {
+    const handleDelete = async () => {
         if (confirm(`Are you sure you want to delete ${selectedContactIds.length} contacts?`)) {
-            setContacts(prev => prev.filter(c => !selectedContactIds.includes(c.id)));
-            setSelectedContactIds([]);
+            try {
+                // Delete from database
+                const response = await fetch("/api/facebook/contacts", {
+                    method: "DELETE",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ contactIds: selectedContactIds }),
+                });
+
+                if (response.ok) {
+                    // Remove from UI
+                    setContacts(prev => prev.filter(c => !selectedContactIds.includes(c.id)));
+                    setSelectedContactIds([]);
+                } else {
+                    const error = await response.json();
+                    alert(`Error deleting contacts: ${error.error || "Unknown error"}`);
+                }
+            } catch (error) {
+                console.error("Error deleting contacts:", error);
+                alert("Error deleting contacts. Please try again.");
+            }
         }
     };
+
+    // Page management removed - pages are now automatically synced from Facebook and stored in database
+    // Multiple users can access the same pages simultaneously
+    // All pages are automatically connected when user logs in
 
     const handleCreateTag = () => {
         const newTag = prompt("Enter new tag name:");
@@ -275,6 +1182,75 @@ export default function BulkMessagePage() {
         }
     };
 
+    // Send broadcast message
+    const handleSendBroadcast = async () => {
+        if (!message.trim()) {
+            alert("Please enter a message");
+            return;
+        }
+
+        if (selectedContactIds.length === 0) {
+            alert("Please select at least one contact");
+            return;
+        }
+
+        setIsSending(true);
+
+        try {
+            // Prepare attachment if file is selected
+            let attachment = null;
+            if (attachedFile) {
+                // For now, we'll need to upload the file first
+                // This is a simplified version - you may want to upload to a storage service first
+                const formData = new FormData();
+                formData.append("file", attachedFile);
+                
+                // TODO: Upload file to storage and get URL
+                // For now, we'll skip attachment if file is too large
+                if (attachedFile.size > 25 * 1024 * 1024) {
+                    alert("File size must be less than 25MB");
+                    setIsSending(false);
+                    return;
+                }
+            }
+
+            const response = await fetch("/api/facebook/messages/send", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    contactIds: selectedContactIds,
+                    message: message.trim(),
+                    scheduleDate: scheduleDate || null,
+                    attachment: attachment
+                }),
+            });
+
+            const data = await response.json();
+
+            if (response.ok && data.success) {
+                alert(`✅ Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n⚠️ ${data.results.failed} failed.` : ''}`);
+                
+                // Clear form
+                setMessage("");
+                setSelectedContactIds([]);
+                setScheduleDate("");
+                setAttachedFile(null);
+                if (fileInputRef.current) {
+                    fileInputRef.current.value = "";
+                }
+            } else {
+                alert(`❌ Failed to send messages: ${data.error || "Unknown error"}`);
+            }
+        } catch (error: any) {
+            console.error("Error sending broadcast:", error);
+            alert(`❌ Error: ${error.message || "Failed to send messages"}`);
+        } finally {
+            setIsSending(false);
+        }
+    };
+
     const isPageSelected = paginatedContacts.length > 0 && paginatedContacts.every(c => selectedContactIds.includes(c.id));
     const isAllFilteredSelected = filteredContacts.length > 0 && filteredContacts.every(c => selectedContactIds.includes(c.id));
 
@@ -318,10 +1294,111 @@ export default function BulkMessagePage() {
                             Broadcast
                         </h1>
                     </div>
-                    <button className="flex items-center gap-2 rounded-full bg-[#1877F2] hover:bg-[#166fe5] px-4 py-2 text-sm font-semibold text-white transition-all shadow-lg shadow-blue-900/20 hover:scale-105 active:scale-95">
+                    {status === "loading" ? (
+                        <div className="flex items-center gap-2 rounded-full bg-zinc-800 px-4 py-2 text-sm font-semibold text-zinc-400">
+                            Loading...
+                        </div>
+                    ) : session ? (
+                        <div className="relative" ref={profileDropdownRef}>
+                            <button
+                                onClick={() => setShowProfileDropdown(!showProfileDropdown)}
+                                className="flex items-center gap-3 rounded-lg px-2 py-1.5 hover:bg-zinc-800/50 transition-colors cursor-pointer"
+                            >
+                                {session.user?.image && (
+                                    <img
+                                        src={session.user.image}
+                                        alt={session.user.name || "User"}
+                                        className="h-8 w-8 rounded-full ring-2 ring-indigo-500/50"
+                                    />
+                                )}
+                                <span className="text-sm font-medium text-white">
+                                    {session.user?.name || session.user?.email}
+                                </span>
+                                <svg 
+                                    className={`w-4 h-4 text-zinc-400 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} 
+                                    fill="none" 
+                                    viewBox="0 0 24 24" 
+                                    stroke="currentColor"
+                                >
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                </svg>
+                            </button>
+                            
+                            {showProfileDropdown && (
+                                <div className="absolute right-0 top-full mt-2 w-56 rounded-xl bg-zinc-900 border border-white/10 shadow-2xl z-50 overflow-hidden">
+                                    <div className="p-2">
+                                        <div className="px-3 py-2 mb-2 border-b border-white/10">
+                                            <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-1">Account</p>
+                                            <p className="text-sm text-white truncate">{session.user?.name || session.user?.email}</p>
+                                            {session.user?.email && (
+                                                <p className="text-xs text-zinc-500 truncate mt-0.5">{session.user.email}</p>
+                                            )}
+                                        </div>
+                                        
+                                        <button
+                                            onClick={handleReconnect}
+                                            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-zinc-300 hover:bg-indigo-500/20 hover:text-indigo-400 rounded-lg transition-colors text-left"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                                            </svg>
+                                            <span>Reconnect Facebook</span>
+                                        </button>
+                                        
+                                        <button
+                                            onClick={handleSignOut}
+                                            className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded-lg transition-colors text-left mt-1"
+                                        >
+                                            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+                                            </svg>
+                                            <span>Sign Out</span>
+                                        </button>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    ) : (
+                        <button
+                            onClick={() => {
+                                // Open popup window for Facebook login
+                                const width = 600;
+                                const height = 700;
+                                const left = (window.screen.width - width) / 2;
+                                const top = (window.screen.height - height) / 2;
+                                
+                                // Use popup callback URL
+                                const popup = window.open(
+                                    `/api/auth/signin/facebook?callbackUrl=${encodeURIComponent("/api/facebook/callback-popup?popup=true")}`,
+                                    'facebook-login',
+                                    `width=${width},height=${height},left=${left},top=${top},resizable=yes,scrollbars=yes`
+                                );
+
+                                // Poll to check if popup is closed (user completed auth)
+                                const checkClosed = setInterval(() => {
+                                    if (popup?.closed) {
+                                        clearInterval(checkClosed);
+                                        // Reload page to check for new session
+                                        window.location.reload();
+                                    }
+                                }, 500);
+
+                                // Also listen for messages from popup
+                                const messageHandler = (event: MessageEvent) => {
+                                    if (event.data?.type === 'AUTH_SUCCESS') {
+                                        clearInterval(checkClosed);
+                                        window.removeEventListener('message', messageHandler);
+                                        window.location.reload();
+                                    }
+                                };
+                                window.addEventListener('message', messageHandler);
+                            }}
+                            className="flex items-center gap-2 rounded-full bg-[#1877F2] hover:bg-[#166fe5] px-4 py-2 text-sm font-semibold text-white transition-all shadow-lg shadow-blue-900/20 hover:scale-105 active:scale-95"
+                        >
                         <FacebookIcon />
                         <span>Sign in with Facebook</span>
                     </button>
+                    )}
                 </div>
             </header>
 
@@ -340,13 +1417,64 @@ export default function BulkMessagePage() {
                             className="w-full rounded-xl bg-zinc-900/50 border border-white/10 py-3 pl-10 pr-4 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-all focus:bg-zinc-900 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 backdrop-blur-sm"
                         />
                     </div>
-                    <select
-                        value={selectedPage}
-                        onChange={(e) => setSelectedPage(e.target.value)}
-                        className="w-full appearance-none rounded-xl bg-zinc-900/50 border border-white/10 py-3 px-4 text-sm text-zinc-100 outline-none transition-all focus:bg-zinc-900 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 backdrop-blur-sm"
-                    >
-                        {PAGES.map(page => <option key={page} value={page}>{page}</option>)}
-                    </select>
+                    <div className="relative page-dropdown-container">
+                        <button
+                            type="button"
+                            onClick={() => setShowPageDropdown(!showPageDropdown)}
+                            disabled={isLoading || pages.length === 1}
+                            className="w-full flex items-center justify-between rounded-xl bg-zinc-900/50 border border-white/10 py-3 px-4 text-sm text-zinc-100 outline-none transition-all focus:bg-zinc-900 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 backdrop-blur-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                            <span>{selectedPage}</span>
+                            <svg className={`w-4 h-4 text-zinc-400 transition-transform ${showPageDropdown ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                            </svg>
+                        </button>
+                        {showPageDropdown && (
+                            <div className="absolute top-full left-0 right-0 mt-2 rounded-xl bg-zinc-900 border border-white/10 shadow-2xl z-50 max-h-96 overflow-hidden flex flex-col">
+                                <div className="relative p-2 border-b border-white/10">
+                                    <div className="absolute left-4 top-1/2 -translate-y-1/2">
+                                        <SearchIcon />
+                                    </div>
+                                    <input
+                                        type="text"
+                                        placeholder="Search pages..."
+                                        value={pageSearchQuery}
+                                        onChange={(e) => setPageSearchQuery(e.target.value)}
+                                        className="w-full rounded-lg bg-zinc-800/50 border border-white/10 py-2 pl-10 pr-4 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-all focus:bg-zinc-800 focus:border-indigo-500/50"
+                                        autoFocus
+                                    />
+                                </div>
+                                <div className="overflow-y-auto max-h-80">
+                                    {pages
+                                        .filter(page => page.toLowerCase().includes(pageSearchQuery.toLowerCase()))
+                                        .map(page => (
+                                            <button
+                                                key={page}
+                                                type="button"
+                                                onClick={() => {
+                                                    setSelectedPage(page);
+                                                    setShowPageDropdown(false);
+                                                    setPageSearchQuery("");
+                                                }}
+                                                className={`w-full text-left px-4 py-2 text-sm transition-colors ${
+                                                    selectedPage === page
+                                                        ? "bg-indigo-500/20 text-indigo-400"
+                                                        : "text-zinc-300 hover:bg-zinc-800/50"
+                                                }`}
+                                            >
+                                                {page}
+                                            </button>
+                                        ))
+                                    }
+                                    {pages.filter(page => page.toLowerCase().includes(pageSearchQuery.toLowerCase())).length === 0 && (
+                                        <div className="px-4 py-8 text-center text-sm text-zinc-500">
+                                            No pages found
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
                     <input
                         type="date"
                         value={dateFilter}
@@ -387,12 +1515,25 @@ export default function BulkMessagePage() {
                     ))}
                 </div>
 
+
+
+                {/* Loading Indicator (fallback) */}
+                {isLoading && !fetchingProgress.isFetching && (
+                    <div className="mb-4 flex items-center justify-center py-8">
+                        <div className="flex items-center gap-3 text-sm text-zinc-400">
+                            <div className="h-5 w-5 animate-spin rounded-full border-2 border-indigo-500 border-t-transparent"></div>
+                            <span>Loading pages and contacts...</span>
+                        </div>
+                    </div>
+                )}
+
                 {/* List Header */}
                 <div className="mb-4 space-y-2">
                     <div className="flex items-center justify-between px-2 h-10">
                         <button
                             onClick={toggleSelectPage}
-                            className="flex items-center gap-3 text-sm font-medium text-zinc-400 hover:text-zinc-200 transition-colors group"
+                            disabled={isLoading}
+                            className="flex items-center gap-3 text-sm font-medium text-zinc-400 hover:text-zinc-200 transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <div
                                 className={`flex h-5 w-5 items-center justify-center rounded-md border transition-all duration-300 ${isPageSelected
@@ -518,13 +1659,32 @@ export default function BulkMessagePage() {
                         );
                     })}
 
-                    {paginatedContacts.length === 0 && (
+                    {!isLoading && paginatedContacts.length === 0 && (
                         <div className="py-20 text-center animate-in fade-in zoom-in-95 duration-300">
                             <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-zinc-900 mb-4">
                                 <SearchIcon />
                             </div>
+                            {contacts.length === 0 ? (
+                                <>
                             <h3 className="text-zinc-300 font-medium">No contacts found</h3>
-                            <p className="text-zinc-500 text-sm mt-1">Try adjusting your filters</p>
+                                    <p className="text-zinc-500 text-sm mt-1 max-w-md mx-auto">
+                                        No conversations found on your connected pages. Contacts will appear here when someone messages your Facebook Pages.
+                                    </p>
+                                    <div className="mt-4 text-xs text-zinc-600 space-y-1">
+                                        <p>Make sure:</p>
+                                        <ul className="list-disc list-inside space-y-1">
+                                            <li>Your pages have received messages</li>
+                                            <li>The <code className="bg-zinc-800 px-1 rounded">pages_messaging</code> permission is granted</li>
+                                            <li>Webhooks are configured for real-time updates</li>
+                                        </ul>
+                                    </div>
+                                </>
+                            ) : (
+                                <>
+                                    <h3 className="text-zinc-300 font-medium">No contacts match your filters</h3>
+                                    <p className="text-zinc-500 text-sm mt-1">Try adjusting your filters or search query</p>
+                                </>
+                            )}
                         </div>
                     )}
                 </div>
@@ -571,6 +1731,150 @@ export default function BulkMessagePage() {
                     </div>
                 )}
             </main>
+
+            {/* Real-time Fetching Progress - Bottom (Collapsible) */}
+            {(fetchingProgress.isFetching || displayTotalContacts > 0) && (
+                <div className="fixed inset-x-0 bottom-0 z-40 transition-all duration-300" style={{ bottom: selectedContactIds.length > 0 ? '200px' : '0' }}>
+                    <div className="mx-auto max-w-4xl px-4 pb-2">
+                        {fetchingProgress.isCollapsed ? (
+                            // Collapsed Widget
+                            <button
+                                onClick={() => setFetchingProgress(prev => ({ ...prev, isCollapsed: false }))}
+                                className="w-full rounded-xl border border-indigo-500/20 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 p-3 backdrop-blur-sm shadow-2xl hover:from-indigo-500/15 hover:to-purple-500/15 transition-all"
+                            >
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        {fetchingProgress.isFetching && (
+                                            <div className="h-3 w-3 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent flex-shrink-0"></div>
+                                        )}
+                                        <span className="text-xs font-medium text-white">
+                                            {fetchingProgress.isFetching ? 'Fetching...' : 'Completed'}
+                                        </span>
+                                        {fetchingProgress.currentPage && fetchingProgress.totalPages && (
+                                            <span className="text-xs text-zinc-400">
+                                                ({fetchingProgress.currentPageNumber}/{fetchingProgress.totalPages})
+                                            </span>
+                                        )}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="text-lg font-bold text-indigo-400">{displayTotalContacts.toLocaleString()}</span>
+                                        <svg className="w-4 h-4 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                                        </svg>
+                                    </div>
+                                </div>
+                            </button>
+                        ) : (
+                            // Expanded Widget
+                            <div className="rounded-2xl border border-indigo-500/20 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 backdrop-blur-sm shadow-2xl">
+                                <div className="p-4">
+                                    <div className="flex items-start justify-between mb-3">
+                                        <div className="flex-1 min-w-0">
+                                            <div className="flex items-center gap-3 mb-2">
+                                                {fetchingProgress.isFetching && (
+                                                    <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent flex-shrink-0"></div>
+                                                )}
+                                                <h3 className="text-sm font-semibold text-white truncate">Fetching Contacts in Real-Time</h3>
+                                                <div className="ml-auto flex items-center gap-2">
+                                                    {fetchingProgress.isFetching && (
+                                                        <>
+                                                            <button
+                                                                onClick={handlePauseResume}
+                                                                className="p-1.5 hover:bg-yellow-500/20 rounded transition-colors text-yellow-400 hover:text-yellow-300"
+                                                                title={fetchingProgress.isPaused ? "Resume Fetching" : "Pause Fetching"}
+                                                            >
+                                                                {fetchingProgress.isPaused ? (
+                                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                    </svg>
+                                                                ) : (
+                                                                    <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                                                    </svg>
+                                                                )}
+                                                            </button>
+                                                        </>
+                                                    )}
+                                                    <button
+                                                        onClick={() => setFetchingProgress(prev => ({ ...prev, isCollapsed: true }))}
+                                                        className="p-1 hover:bg-white/10 rounded transition-colors"
+                                                        title="Collapse"
+                                                    >
+                                                        <svg className="w-4 h-4 text-zinc-400" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M20 12H4" />
+                                                        </svg>
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            {fetchingProgress.currentPage && (
+                                                <p className="text-xs text-zinc-400 ml-7 truncate">
+                                                    Processing: <span className="text-indigo-400 font-medium">{fetchingProgress.currentPage}</span>
+                                                    {fetchingProgress.currentPageNumber !== undefined && fetchingProgress.totalPages !== undefined && (
+                                                        <span className="text-zinc-500"> ({fetchingProgress.currentPageNumber}/{fetchingProgress.totalPages})</span>
+                                                    )}
+                                                </p>
+                                            )}
+                                            {fetchingProgress.message && (
+                                                <p className="text-xs text-zinc-500 mt-1 ml-7 truncate">{fetchingProgress.message}</p>
+                                            )}
+                                            {displayTotalContacts > 0 && (
+                                                <p className="text-xs text-indigo-400 ml-7 mt-1 font-medium">
+                                                    Total Contacts: {displayTotalContacts.toLocaleString()}
+                                                </p>
+                                            )}
+                                        </div>
+                                        <div className="text-right flex-shrink-0 ml-4">
+                                            <div className="text-2xl font-bold text-indigo-400">{displayTotalContacts.toLocaleString()}</div>
+                                            <div className="text-xs text-zinc-500">contacts</div>
+                                        </div>
+                                    </div>
+                                    
+                                    {/* Progress Bar */}
+                                    {fetchingProgress.currentPageNumber !== undefined && fetchingProgress.totalPages !== undefined && (
+                                        <div className="mb-3">
+                                            <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
+                                                <div 
+                                                    className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
+                                                    style={{ width: `${Math.min(100, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100)}%` }}
+                                                />
+                                            </div>
+                                            <div className="flex justify-between text-xs text-zinc-500 mt-1">
+                                                <span>Page {fetchingProgress.currentPageNumber} of {fetchingProgress.totalPages}</span>
+                                                <span>{Math.round((fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100)}%</span>
+                                            </div>
+                                        </div>
+                                    )}
+                                    
+                                    {/* Recent Contacts */}
+                                    {fetchingProgress.recentContacts.length > 0 && (
+                                        <div className="pt-3 border-t border-white/10">
+                                            <p className="text-xs font-semibold text-zinc-400 uppercase tracking-wider mb-2">Recently Added</p>
+                                            <div className="flex flex-wrap gap-2">
+                                                {fetchingProgress.recentContacts.slice(0, 5).map((contact, idx) => (
+                                                    <div
+                                                        key={`${contact.id}-${contact.pageId}-${idx}`}
+                                                        className="flex items-center gap-2 rounded-lg bg-indigo-500/20 border border-indigo-500/30 px-2.5 py-1.5 animate-in fade-in slide-in-from-right-2"
+                                                        style={{ animationDelay: `${idx * 100}ms` }}
+                                                    >
+                                                        <div className="h-5 w-5 rounded-full bg-gradient-to-br from-indigo-500 to-purple-600 flex items-center justify-center text-[10px] font-bold text-white flex-shrink-0">
+                                                            {contact.avatar}
+                                                        </div>
+                                                        <div className="min-w-0">
+                                                            <p className="text-xs font-medium text-white truncate">{contact.name}</p>
+                                                            <p className="text-[10px] text-zinc-400 truncate">{contact.page}</p>
+                                                        </div>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                </div>
+            )}
 
             {/* Bottom Composer Popup */}
             <div
@@ -660,14 +1964,363 @@ export default function BulkMessagePage() {
                                     />
                                 </div>
                             </div>
-                            <button className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95">
-                                <span>{scheduleDate ? "Schedule" : "Send Broadcast"}</span>
+                            <button 
+                                onClick={handleSendBroadcast}
+                                disabled={isSending || !message.trim() || selectedContactIds.length === 0}
+                                className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                            >
+                                <span>{isSending ? "Sending..." : scheduleDate ? "Schedule" : "Send Broadcast"}</span>
                                 <SendIcon />
                             </button>
                         </div>
                     </div>
                 </div>
             </div>
+
+            {/* Reconnect Modal - Removed: All pages are automatically connected */}
+            {false && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                    <div
+                        className="fixed inset-0 bg-black/80 backdrop-blur-sm"
+                        onClick={() => setShowReconnectModal(false)}
+                    />
+                    <div className="relative w-full max-w-2xl rounded-2xl border border-white/10 bg-zinc-900/95 backdrop-blur-xl shadow-2xl max-h-[90vh] overflow-hidden flex flex-col">
+                        <div className="flex items-center justify-between p-6 border-b border-white/10">
+                            <div>
+                                <h2 className="text-xl font-bold text-white">Manage Facebook Pages</h2>
+                                <p className="text-sm text-zinc-400 mt-1">Select which pages to connect</p>
+        </div>
+                            <button
+                                onClick={() => setShowReconnectModal(false)}
+                                className="rounded-lg p-2 hover:bg-zinc-800 transition-colors"
+                            >
+                                <XIcon size={20} />
+                            </button>
+                        </div>
+
+                        <div className="flex-1 overflow-y-auto p-6">
+                            {/* Search */}
+                            <div className="relative mb-4">
+                                <div className="absolute left-3 top-1/2 -translate-y-1/2">
+                                    <SearchIcon />
+                                </div>
+                                <input
+                                    type="text"
+                                    placeholder="Search pages..."
+                                    value={pageSearchQuery}
+                                    onChange={(e) => {
+                                        setPageSearchQuery(e.target.value);
+                                        setPageModalCurrentPage(1);
+                                        setConnectedPagesCurrentPage(1);
+                                    }}
+                                    className="w-full rounded-lg bg-zinc-800/50 border border-white/10 py-2.5 pl-10 pr-4 text-sm text-zinc-100 placeholder-zinc-500 outline-none transition-all focus:bg-zinc-800 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20"
+                                />
+                            </div>
+
+                            {/* Connected Pages Section */}
+                            {connectedPageIds.length > 0 && (() => {
+                                const connectedPages = availablePages.filter((p: any) => connectedPageIds.includes(p.id));
+                                const connectedPagesTotalPages = Math.ceil(connectedPages.length / connectedPagesItemsPerPage);
+                                const paginatedConnectedPages = connectedPages.slice(
+                                    (connectedPagesCurrentPage - 1) * connectedPagesItemsPerPage,
+                                    connectedPagesCurrentPage * connectedPagesItemsPerPage
+                                );
+
+                                return (
+                                    <div className="mb-6">
+                                        <div className="flex items-center justify-between mb-3">
+                                            <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
+                                                Connected Pages ({connectedPageIds.length})
+                                            </h3>
+                                            <div className="flex items-center gap-2">
+                                                {selectedPageIdsForDisconnect.length > 0 && (
+                                                    <>
+                                                        <button
+                                                            onClick={clearConnectedPageSelection}
+                                                            className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+                                                        >
+                                                            Clear ({selectedPageIdsForDisconnect.length})
+                                                        </button>
+                                                        <button
+                                                            onClick={handleBulkDisconnect}
+                                                            className="flex items-center gap-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors"
+                                                        >
+                                                            <TrashIcon />
+                                                            Disconnect Selected
+                                                        </button>
+                                                    </>
+                                                )}
+                                                <button
+                                                    onClick={selectedPageIdsForDisconnect.length === connectedPageIds.length ? clearConnectedPageSelection : selectAllConnectedPages}
+                                                    className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                                                >
+                                                    {selectedPageIdsForDisconnect.length === connectedPageIds.length ? "Deselect All" : "Select All"}
+                                                </button>
+                                            </div>
+                                        </div>
+                                        <div className="space-y-2 mb-4">
+                                            {paginatedConnectedPages.map((page: any) => {
+                                                const isSelected = selectedPageIdsForDisconnect.includes(page.id);
+                                                return (
+                                                    <button
+                                                        key={page.id}
+                                                        onClick={() => toggleConnectedPageSelection(page.id)}
+                                                        className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all ${
+                                                            isSelected
+                                                                ? "border-red-500/50 bg-red-500/10"
+                                                                : "border-green-500/30 bg-green-500/10 hover:border-green-500/50"
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                            <span className="text-sm font-medium text-white truncate">{page.name}</span>
+                                                        </div>
+                                                        <span className={`text-xs ${isSelected ? "text-red-400" : "text-green-400"}`}>
+                                                            {isSelected ? "Selected" : "Connected"}
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        {/* Connected Pages Pagination */}
+                                        {connectedPagesTotalPages > 1 && (
+                                            <div className="flex items-center justify-between pt-4 border-t border-white/10">
+                                                <button
+                                                    onClick={() => setConnectedPagesCurrentPage(prev => Math.max(1, prev - 1))}
+                                                    disabled={connectedPagesCurrentPage === 1}
+                                                    className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    <ChevronLeftIcon />
+                                                    Previous
+                                                </button>
+                                                <span className="text-sm text-zinc-400">
+                                                    Page {connectedPagesCurrentPage} of {connectedPagesTotalPages}
+                                                </span>
+                                                <button
+                                                    onClick={() => setConnectedPagesCurrentPage(prev => Math.min(connectedPagesTotalPages, prev + 1))}
+                                                    disabled={connectedPagesCurrentPage === connectedPagesTotalPages}
+                                                    className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    Next
+                                                    <ChevronRightIcon />
+                                                </button>
+                                            </div>
+                                        )}
+                                    </div>
+                                );
+                            })()}
+
+                            {/* Available Pages Section */}
+                            <div>
+                                <div className="flex items-center justify-between mb-3">
+                                    <h3 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
+                                        Available Pages ({filteredAvailablePages.length})
+                                    </h3>
+                                    <div className="flex items-center gap-2">
+                                        {selectedAvailablePageIds.length > 0 && (
+                                            <>
+                                                <button
+                                                    onClick={clearAvailablePageSelection}
+                                                    className="text-xs text-zinc-400 hover:text-zinc-200 transition-colors"
+                                                >
+                                                    Clear ({selectedAvailablePageIds.length})
+                                                </button>
+                                                <button
+                                                    onClick={handleBulkConnectAvailablePages}
+                                                    className="flex items-center gap-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1.5 text-xs font-medium text-indigo-400 transition-colors"
+                                                >
+                                                    <CheckIcon />
+                                                    Connect Selected
+                                                </button>
+                                                <button
+                                                    onClick={handleBulkDeleteAvailablePages}
+                                                    className="flex items-center gap-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors"
+                                                >
+                                                    <TrashIcon />
+                                                    Delete Selected
+                                                </button>
+                                            </>
+                                        )}
+                                        <button
+                                            onClick={() => {
+                                                const unconnectedPages = filteredAvailablePages
+                                                    .filter((p: any) => !connectedPageIds.includes(p.id))
+                                                    .map((p: any) => p.id);
+                                                if (selectedAvailablePageIds.length === unconnectedPages.length) {
+                                                    clearAvailablePageSelection();
+                                                } else {
+                                                    selectAllAvailablePages();
+                                                }
+                                            }}
+                                            className="text-xs text-indigo-400 hover:text-indigo-300 transition-colors"
+                                        >
+                                            {selectedAvailablePageIds.length === filteredAvailablePages.filter((p: any) => !connectedPageIds.includes(p.id)).length ? "Deselect All" : "Select All"}
+                                        </button>
+                                    </div>
+                                </div>
+                                
+                                {paginatedModalPages.length === 0 ? (
+                                    <div className="text-center py-8 text-zinc-400">
+                                        <p>No pages found. Try reconnecting your Facebook account.</p>
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div className="space-y-2 mb-4">
+                                            {paginatedModalPages.map((page: any) => {
+                                                const isConnected = connectedPageIds.includes(page.id);
+                                                const isSelectedForBulk = selectedAvailablePageIds.includes(page.id);
+                                                return (
+                                                    <button
+                                                        key={page.id}
+                                                        onClick={async () => {
+                                                            if (!isConnected) {
+                                                                // Connect the page
+                                                                try {
+                                                                    const response = await fetch("/api/facebook/pages/connect", {
+                                                                        method: "POST",
+                                                                        headers: {
+                                                                            "Content-Type": "application/json",
+                                                                        },
+                                                                        body: JSON.stringify({
+                                                                            pageIds: [page.id],
+                                                                            action: "connect",
+                                                                        }),
+                                                                    });
+
+                                                                    if (response.ok) {
+                                                                        // Update local state
+                                                                        setConnectedPageIds(prev => [...prev, page.id]);
+                                                                        const connectedPages = [...pageData, page].filter((p: any, index: number, self: any[]) => 
+                                                                            index === self.findIndex((t: any) => t.id === p.id)
+                                                                        );
+                                                                        setPageData(connectedPages);
+                                                                        const pageNames = ["All Pages", ...connectedPages.map((p: any) => p.name)];
+                                                                        setPages(pageNames);
+                                                                        
+                                                                        // Refresh contacts
+                                                                        try {
+                                                                            const contactsResponse = await fetch("/api/facebook/contacts");
+                                                                            if (contactsResponse.ok) {
+                                                                                const contactsData = await contactsResponse.json();
+                                                                                setContacts(contactsData.contacts || []);
+                                                                            }
+                                                                        } catch (error) {
+                                                                            console.error("Error fetching contacts:", error);
+                                                                        }
+                                                                    } else {
+                                                                        const errorData = await response.json();
+                                                                        alert(`Failed to connect page: ${errorData.error || "Unknown error"}`);
+                                                                    }
+                                                                } catch (error) {
+                                                                    console.error("Error connecting page:", error);
+                                                                    alert("An error occurred while connecting the page");
+                                                                }
+                                                            } else {
+                                                                // Disconnect the page
+                                                                try {
+                                                                    const response = await fetch("/api/facebook/pages/connect", {
+                                                                        method: "POST",
+                                                                        headers: {
+                                                                            "Content-Type": "application/json",
+                                                                        },
+                                                                        body: JSON.stringify({
+                                                                            pageIds: [page.id],
+                                                                            action: "disconnect",
+                                                                        }),
+                                                                    });
+
+                                                                    if (response.ok) {
+                                                                        // Update local state
+                                                                        setConnectedPageIds(prev => prev.filter(id => id !== page.id));
+                                                                        const connectedPages = pageData.filter((p: any) => p.id !== page.id);
+                                                                        setPageData(connectedPages);
+                                                                        const pageNames = ["All Pages", ...connectedPages.map((p: any) => p.name)];
+                                                                        setPages(pageNames);
+                                                                        
+                                                                        // Update contacts to remove contacts from disconnected page
+                                                                        setContacts(prev => prev.filter(c => c.pageId !== page.id));
+                                                                    } else {
+                                                                        const errorData = await response.json();
+                                                                        alert(`Failed to disconnect page: ${errorData.error || "Unknown error"}`);
+                                                                    }
+                                                                } catch (error) {
+                                                                    console.error("Error disconnecting page:", error);
+                                                                    alert("An error occurred while disconnecting the page");
+                                                                }
+                                                            }
+                                                        }}
+                                                        className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all cursor-pointer ${
+                                                            isConnected
+                                                                ? "border-indigo-500 bg-indigo-500/10 hover:bg-indigo-500/20"
+                                                                : isSelectedForBulk
+                                                                ? "border-indigo-500/50 bg-indigo-500/10 hover:bg-indigo-500/20"
+                                                                : "border-white/10 bg-zinc-800/30 hover:border-indigo-500/50 hover:bg-indigo-500/10"
+                                                        }`}
+                                                    >
+                                                        <div className="flex items-center gap-3 flex-1 min-w-0">
+                                                            <span className="text-sm font-medium text-white truncate">{page.name}</span>
+                                                        </div>
+                                                        <div className="flex items-center gap-2">
+                                                            {isSelectedForBulk && (
+                                                                <span className="text-xs text-indigo-400">Selected</span>
+                                                            )}
+                                                            {isConnected ? (
+                                                                <span className="text-xs text-indigo-400">Connected - Click to disconnect</span>
+                                                            ) : (
+                                                                <span className="text-xs text-zinc-400">Click to connect</span>
+                                                            )}
+                                                        </div>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+
+                                        {/* Pagination */}
+                                        {modalTotalPages > 1 && (
+                                            <div className="flex items-center justify-between pt-4 border-t border-white/10">
+                                                <button
+                                                    onClick={() => setPageModalCurrentPage(prev => Math.max(1, prev - 1))}
+                                                    disabled={pageModalCurrentPage === 1}
+                                                    className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    <ChevronLeftIcon />
+                                                    Previous
+                                                </button>
+                                                <span className="text-sm text-zinc-400">
+                                                    Page {pageModalCurrentPage} of {modalTotalPages}
+                                                </span>
+                                                <button
+                                                    onClick={() => setPageModalCurrentPage(prev => Math.min(modalTotalPages, prev + 1))}
+                                                    disabled={pageModalCurrentPage === modalTotalPages}
+                                                    className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    Next
+                                                    <ChevronRightIcon />
+                                                </button>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </div>
+
+                        <div className="flex items-center justify-end gap-3 p-6 border-t border-white/10">
+                            <button
+                                onClick={() => setShowReconnectModal(false)}
+                                className="rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm font-medium text-zinc-300 transition-colors"
+                            >
+                                Cancel
+                            </button>
+                            <button
+                                onClick={handleReconnect}
+                                className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 px-4 py-2 text-sm font-medium text-white transition-all shadow-lg shadow-indigo-500/25"
+                            >
+                                <FacebookIcon />
+                                Save Connected Pages ({connectedPageIds.length})
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

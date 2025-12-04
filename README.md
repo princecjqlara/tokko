@@ -1,5 +1,36 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Facebook Authentication Setup
+
+1. **Create a Facebook App:**
+   - Go to [Facebook Developers](https://developers.facebook.com/apps/)
+   - Click "Create App" and select "Consumer" or "Business"
+   - Fill in your app details
+
+2. **Configure Facebook Login:**
+   - In your app dashboard, go to "Add Product" → "Facebook Login"
+   - Set up Facebook Login
+   - Add `http://localhost:3000/api/auth/callback/facebook` as a Valid OAuth Redirect URI
+
+3. **Get Your Credentials:**
+   - Go to Settings → Basic
+   - Copy your App ID and App Secret
+
+4. **Set Environment Variables:**
+   - Create a `.env.local` file in the root directory
+   - Add the following:
+   ```
+   NEXTAUTH_URL=http://localhost:3000
+   NEXTAUTH_SECRET=your-secret-key-here
+   FACEBOOK_CLIENT_ID=your-facebook-app-id
+   FACEBOOK_CLIENT_SECRET=your-facebook-app-secret
+   ```
+   - Generate a secret: `openssl rand -base64 32`
+
+5. **For Production:**
+   - Update `NEXTAUTH_URL` to your production domain
+   - Add your production callback URL to Facebook App settings
+
 ## Getting Started
 
 First, run the development server:
