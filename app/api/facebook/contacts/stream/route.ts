@@ -634,10 +634,11 @@ export async function GET(request: NextRequest) {
             // Process conversations in batches for better progress tracking
             const BATCH_SIZE = 50;
             const BATCH_SAVE_SIZE = 100;
-            const PROGRESS_UPDATE_INTERVAL = 50; // Update every 50 conversations
+            const PROGRESS_UPDATE_INTERVAL = 10; // Update every 10 conversations for real-time feel
             let processedCount = 0;
             const processingStartTime = Date.now();
             const MAX_PROCESSING_TIME = 4 * 60 * 1000; // 4 minutes max per page
+            let lastSentContactCount = 0; // Track last sent count to ensure it never decreases
             
             console.log(`   🚀 [Stream Route] Starting to process ${allConversations.length} conversations for ${page.name}`);
             
@@ -783,11 +784,28 @@ export async function GET(request: NextRequest) {
                   
                   // Send contact immediately for UI updates
                   const totalContacts = existingContactCount + allContacts.length;
+                  
+                  // Ensure count never decreases
+                  const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
+                  lastSentContactCount = safeTotalContacts;
+                  
                   send({
                     type: "contact",
                     contact: contactData,
-                    totalContacts: totalContacts
+                    totalContacts: safeTotalContacts
                   });
+                  
+                  // Send progress update every contact for real-time feel (but throttle to every 5 contacts to avoid spam)
+                  if (allContacts.length % 5 === 0) {
+                    send({
+                      type: "status",
+                      message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`,
+                      totalContacts: safeTotalContacts,
+                      currentPage: processedPages,
+                      totalPages: pages.length,
+                      progress: Math.round((processedCount / allConversations.length) * 100)
+                    });
+                  }
                 }
               } // End if (contact)
               
@@ -851,6 +869,10 @@ export async function GET(request: NextRequest) {
               
               // Update job status and send progress updates more frequently (every PROGRESS_UPDATE_INTERVAL)
               const totalContacts = existingContactCount + allContacts.length;
+              // Ensure count never decreases
+              const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
+              lastSentContactCount = safeTotalContacts;
+              
               if (processedCount % PROGRESS_UPDATE_INTERVAL === 0 || i === allConversations.length - 1) {
                 // Don't await status updates - fire and forget to avoid blocking
                 updateJobStatus({
@@ -859,7 +881,7 @@ export async function GET(request: NextRequest) {
                   current_page_name: page.name,
                   current_page_number: processedPages,
                   total_pages: pages.length,
-                  total_contacts: totalContacts,
+                  total_contacts: safeTotalContacts,
                   message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`
                 }).catch((statusError) => {
                   console.warn(`⚠️ Could not update job status:`, statusError);
@@ -868,7 +890,7 @@ export async function GET(request: NextRequest) {
                 send({
                   type: "status",
                   message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts...`,
-                  totalContacts: totalContacts,
+                  totalContacts: safeTotalContacts,
                   currentPage: processedPages,
                   totalPages: pages.length,
                   progress: Math.round((processedCount / allConversations.length) * 100)
@@ -937,15 +959,19 @@ export async function GET(request: NextRequest) {
             }
             
             const totalContacts = existingContactCount + allContacts.length;
-            console.log(`   📊 [Stream Route] Sending page_complete event for ${page.name} (${pageContacts} contacts, ${totalContacts} total)`);
+            // Ensure count never decreases
+            const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
+            lastSentContactCount = safeTotalContacts;
+            
+            console.log(`   📊 [Stream Route] Sending page_complete event for ${page.name} (${pageContacts} contacts, ${safeTotalContacts} total)`);
             send({
               type: "page_complete",
               pageName: page.name,
               contactsCount: pageContacts,
-              totalContacts: totalContacts,
+              totalContacts: safeTotalContacts,
               currentPage: processedPages,
               totalPages: pages.length,
-              message: `✓ Completed ${page.name}: ${pageContacts} new contacts (${totalContacts} total)`
+              message: `✓ Completed ${page.name}: ${pageContacts} new contacts (${safeTotalContacts} total)`
             });
             console.log(`   ✅ [Stream Route] Page ${page.name} processing complete, moving to next page...`);
           } catch (pageError: any) {
@@ -971,14 +997,16 @@ export async function GET(request: NextRequest) {
         
         // Update job to completed with total count including existing
         const finalTotalContacts = existingContactCount + allContacts.length;
+        // Ensure count never decreases - use the last sent count as minimum
+        const safeFinalTotalContacts = Math.max(finalTotalContacts, lastSentContactCount || 0);
         
         try {
           await updateJobStatus({
             status: "completed",
             is_paused: false,
-            total_contacts: finalTotalContacts,
+            total_contacts: safeFinalTotalContacts,
             total_pages: pages.length,
-            message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
+            message: `Finished! Found ${safeFinalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
             completed_at: new Date().toISOString()
           });
           console.log(`✅ [Stream Route] Job status updated to completed`);
@@ -989,9 +1017,9 @@ export async function GET(request: NextRequest) {
         try {
           send({
             type: "complete",
-            totalContacts: finalTotalContacts,
+            totalContacts: safeFinalTotalContacts,
             totalPages: pages.length,
-            message: `Finished! Found ${finalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
+            message: `Finished! Found ${safeFinalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
             newContactsCount: allContacts.length
           });
           console.log(`✅ [Stream Route] Completion event sent`);
@@ -999,7 +1027,7 @@ export async function GET(request: NextRequest) {
           console.error("❌ [Stream Route] Error sending completion event:", sendError);
         }
         
-        console.log(`✅ [Stream Route] Completed fetch: ${allContacts.length} new contacts, ${finalTotalContacts} total contacts from ${pages.length} pages`);
+        console.log(`✅ [Stream Route] Completed fetch: ${allContacts.length} new contacts, ${safeFinalTotalContacts} total contacts from ${pages.length} pages`);
         
         // Mark as completed
         streamCompleted = true;
