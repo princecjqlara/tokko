@@ -625,14 +625,35 @@ export async function GET(request: NextRequest) {
             let pageContacts = 0;
             const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates in this session
             const processedContactKeys = new Set<string>(); // Track contacts already processed in this run
+            const contactsToSave: any[] = []; // Batch buffer for database saves
             
             console.log(`   🔄 [Stream Route] Starting conversation processing loop for ${page.name} (${allConversations.length} conversations)`);
             
-            for (const conversation of allConversations) {
+            // Process conversations in batches for better progress tracking
+            const BATCH_SIZE = 50;
+            const BATCH_SAVE_SIZE = 100;
+            let processedCount = 0;
+            
+            for (let i = 0; i < allConversations.length; i++) {
+              const conversation = allConversations[i];
+              processedCount++;
+              
               // Check if paused periodically while processing conversations
-              if (pageContacts % 50 === 0) {
+              if (processedCount % BATCH_SIZE === 0) {
                 await waitWhilePaused();
-                console.log(`   💓 [Stream Route] Heartbeat: Processed ${pageContacts}/${allConversations.length} conversations for ${page.name}`);
+                console.log(`   💓 [Stream Route] Heartbeat: Processed ${processedCount}/${allConversations.length} conversations for ${page.name}`);
+                // Send progress update every batch
+                send({
+                  type: "status",
+                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations...`,
+                  progress: Math.round((processedCount / allConversations.length) * 100),
+                });
+              }
+              
+              // Check if stream is completed (timeout or error)
+              if (streamCompleted) {
+                console.warn(`⚠️ [Stream Route] Stream marked as completed, stopping conversation processing`);
+                break;
               }
               
               const participants = conversation.participants?.data || [];
@@ -724,204 +745,152 @@ export async function GET(request: NextRequest) {
                 }
 
                 if (contactData) {
-                  // Check if contact already exists and if it needs updating
-                  let shouldProcess = true;
-                  let isNewContact = true;
+                  // Quick check: if we've already processed this contact key in this batch, skip
+                  if (processedContactKeys.has(contactKey)) {
+                    continue;
+                  }
                   
+                  // Mark as processed
+                  processedContactKeys.add(contactKey);
+                  
+                  // Add to collections
+                  allContacts.push(contactData);
+                  contactsToSave.push(contactData);
+                  pageContacts++;
+                  
+                  // Send contact immediately for UI updates
+                  const totalContacts = existingContactCount + allContacts.length;
+                  send({
+                    type: "contact",
+                    contact: contactData,
+                    totalContacts: totalContacts
+                  });
+                }
+              }
+              
+              // Batch save contacts to database every BATCH_SAVE_SIZE contacts or at the end
+              if (contactsToSave.length >= BATCH_SAVE_SIZE || (i === allConversations.length - 1 && contactsToSave.length > 0)) {
+                const batchToSave = contactsToSave.splice(0, BATCH_SAVE_SIZE); // Remove from buffer
+                
+                if (batchToSave.length > 0) {
                   try {
-                    // Add timeout to database query (10 seconds)
-                    const dbCheckPromise = supabaseServer
-                      .from("contacts")
-                      .select("updated_at, last_message_time, contact_id")
-                      .eq("contact_id", contactData.id)
-                      .eq("page_id", contactData.pageId)
-                      .eq("user_id", userId)
-                      .maybeSingle(); // Use maybeSingle() instead of single() to handle no results gracefully
+                    const contactsToUpsert = batchToSave.map((contactData: any) => ({
+                      contact_id: contactData.id,
+                      page_id: contactData.pageId,
+                      user_id: userId,
+                      contact_name: contactData.name,
+                      page_name: contactData.page,
+                      last_message: contactData.lastMessage || null,
+                      last_message_time: contactData.lastMessageTime || null,
+                      last_contact_message_date: contactData.lastContactMessageDate || null,
+                      updated_at: contactData.updatedTime || new Date().toISOString(),
+                      tags: contactData.tags || [],
+                      role: contactData.role || "",
+                      avatar: contactData.avatar,
+                      date: contactData.date || null,
+                    }));
                     
-                    const timeoutPromise = new Promise((_, reject) => 
-                      setTimeout(() => reject(new Error("Database query timeout")), 10000)
+                    const dbBatchSavePromise = supabaseServer
+                      .from("contacts")
+                      .upsert(contactsToUpsert, {
+                        onConflict: "contact_id,page_id,user_id"
+                      });
+                    
+                    const saveTimeoutPromise = new Promise((_, reject) => 
+                      setTimeout(() => reject(new Error("Database batch save timeout")), 30000) // 30s for batch
                     );
                     
-                    let existingContact: any = null;
-                    let checkError: any = null;
-                    
                     try {
-                      const result = await Promise.race([
-                        dbCheckPromise,
-                        timeoutPromise
-                      ]) as any;
-                      existingContact = result?.data;
-                      checkError = result?.error;
-                    } catch (timeoutError: any) {
-                      // Timeout or other error occurred
-                      if (timeoutError.message?.includes("timeout")) {
-                        console.warn(`⏱️ Database check timeout for contact ${contactData.id}, proceeding anyway`);
+                      await Promise.race([
+                        dbBatchSavePromise,
+                        saveTimeoutPromise
+                      ]);
+                      console.log(`   💾 Batch saved ${batchToSave.length} contacts to database (${allContacts.length} total so far)`);
+                    } catch (batchError: any) {
+                      if (batchError.message?.includes("timeout")) {
+                        console.warn(`⏱️ Database batch save timeout, ${batchToSave.length} contacts may not be saved`);
                       } else {
-                        checkError = timeoutError;
+                        console.error(`❌ Error batch saving contacts:`, batchError);
                       }
                     }
-                    
-                    if (existingContact && !checkError) {
-                      isNewContact = false;
-                      // Contact exists - check if conversation was updated (new messages)
-                      const existingUpdateTime = existingContact.updated_at ? new Date(existingContact.updated_at).getTime() : 0;
-                      const conversationUpdateTime = new Date(conversation.updated_time).getTime();
-                      
-                      // Only process if conversation was updated AFTER the last contact update (new messages)
-                      // Add 10 second buffer to account for timing differences and processing delays
-                      if (conversationUpdateTime <= (existingUpdateTime + 10000)) {
-                        shouldProcess = false;
-                        processedContactKeys.add(contactKey); // Mark as processed
-                        // Skip this contact - no new messages, already processed
-                        continue;
-                      } else {
-                        console.log(`   🔄 Contact ${contactData.id} has new messages (conversation updated ${Math.round((conversationUpdateTime - existingUpdateTime) / 1000)}s after last update)`);
-                      }
-                    } else if (checkError && checkError.code !== 'PGRST116') {
-                      // PGRST116 is "no rows returned" which is expected for new contacts
-                      console.log(`   ⚠️ Error checking contact ${contactData.id}:`, checkError.message);
-                    }
-                  } catch (checkError: any) {
-                    // If check fails, proceed with processing (might be new contact)
-                    console.log(`   ℹ️ Could not check existing contact ${contactData.id}, will process as new`);
-                  }
-                  
-                  if (shouldProcess) {
-                    processedContactKeys.add(contactKey); // Mark as processed
-                    // Only add to allContacts if it's actually new or updated
-                    allContacts.push(contactData);
-                    if (isNewContact) {
-                      pageContacts++; // Only count new contacts, not updated ones
-                    }
-                    
-                    // Save contact to database
-                    try {
-                      // Add timeout to database upsert (10 seconds)
-                      const dbSavePromise = supabaseServer
-                        .from("contacts")
-                        .upsert({
-                          contact_id: contactData.id,
-                          page_id: contactData.pageId,
-                          user_id: userId,
-                          contact_name: contactData.name,
-                          page_name: contactData.page,
-                          last_message: contactData.lastMessage || null,
-                          last_message_time: contactData.lastMessageTime || null,
-                          last_contact_message_date: contactData.lastContactMessageDate || null,
-                          updated_at: contactData.updatedTime || new Date().toISOString(),
-                          tags: contactData.tags || [],
-                          role: contactData.role || "",
-                          avatar: contactData.avatar,
-                          date: contactData.date || null,
-                        }, {
-                          onConflict: "contact_id,page_id,user_id"
-                        })
-                        .select();
-                      
-                      const saveTimeoutPromise = new Promise((_, reject) => 
-                        setTimeout(() => reject(new Error("Database save timeout")), 10000)
-                      );
-                      
-                      let savedData: any = null;
-                      let saveError: any = null;
-                      
-                      try {
-                        const result = await Promise.race([
-                          dbSavePromise,
-                          saveTimeoutPromise
-                        ]) as any;
-                        savedData = result?.data;
-                        saveError = result?.error;
-                      } catch (timeoutError: any) {
-                        // Timeout or other error occurred
-                        if (timeoutError.message?.includes("timeout")) {
-                          console.warn(`⏱️ Database save timeout for contact ${contactData.id}, contact may not be saved`);
-                          saveError = { message: "Database save timeout", code: "TIMEOUT" };
-                        } else {
-                          saveError = timeoutError;
-                        }
-                      }
-                      
-                      if (saveError) {
-                        // Always log errors - they're important
-                        console.error(`❌ Error saving contact ${contactData.id} (${contactData.name}) to database:`, {
-                          error: saveError,
-                          code: saveError.code,
-                          message: saveError.message,
-                          details: saveError.details,
-                          hint: saveError.hint,
-                          contactData: {
-                            id: contactData.id,
-                            pageId: contactData.pageId,
-                            userId: userId
-                          }
-                        });
-                        // Continue even if save fails
-                      } else {
-                        // Log success every 50 contacts for better visibility
-                        if (pageContacts % 50 === 0) {
-                          console.log(`   💾 Saved ${pageContacts} contacts to database so far...`);
-                        }
-                        // Log first 10 successful saves to verify it's working
-                        if (pageContacts <= 10) {
-                          console.log(`   ✅ Successfully saved contact ${contactData.id} (${contactData.name}) to database`);
-                        }
-                      }
-                    } catch (saveError: any) {
-                      console.error(`❌ Exception saving contact ${contactData.id}:`, {
-                        error: saveError,
-                        message: saveError?.message,
-                        stack: saveError?.stack
-                      });
-                      // Continue even if save fails
-                    }
-                    
-                    // Update job status periodically - use existing count + new contacts only
-                    const totalContacts = existingContactCount + allContacts.length;
-                    if (allContacts.length % 50 === 0) {
-                      await updateJobStatus({
-                        status: "running",
-                        is_paused: false,
-                        current_page_name: page.name,
-                        current_page_number: processedPages,
-                        total_pages: pages.length,
-                        total_contacts: totalContacts,
-                        message: `Found ${allContacts.length} new/updated contacts (${existingContactCount} existing)...`
-                      });
-                    }
-                    
-                    // Send contact immediately with total count including existing
-                    // Only send if it's a new contact or has updates
-                    // Don't include currentPage in contact events - page info is only sent on page_start/page_complete
-                    send({
-                      type: "contact",
-                      contact: contactData,
-                      totalContacts: totalContacts
-                      // Removed currentPage and totalPages from contact events to prevent UI flicker
-                      // Page info is only updated on page_start and page_complete events
-                    });
-                    
-                    // Send progress update every 50 contacts to keep UI responsive and update progress bar
-                    if (allContacts.length % 50 === 0) {
-                      send({
-                        type: "status",
-                        message: `Found ${allContacts.length} new/updated contacts (${existingContactCount} existing)...`,
-                        totalContacts: totalContacts,
-                        currentPage: processedPages,
-                        totalPages: pages.length
-                      });
-                      // Also send a page_start-like event to update progress bar without changing page name
-                      send({
-                        type: "page_progress",
-                        pageName: page.name,
-                        currentPage: processedPages,
-                        totalPages: pages.length,
-                        totalContacts: totalContacts,
-                        message: `Processing ${page.name}... ${allContacts.length} new contacts so far`
-                      });
-                    }
+                  } catch (batchError: any) {
+                    console.error(`❌ Exception batch saving contacts:`, batchError);
                   }
                 }
+              }
+              
+              // Update job status and send progress updates periodically
+              const totalContacts = existingContactCount + allContacts.length;
+              if (processedCount % 100 === 0 || i === allConversations.length - 1) {
+                try {
+                  await updateJobStatus({
+                    status: "running",
+                    is_paused: false,
+                    current_page_name: page.name,
+                    current_page_number: processedPages,
+                    total_pages: pages.length,
+                    total_contacts: totalContacts,
+                    message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`
+                  });
+                } catch (statusError) {
+                  console.warn(`⚠️ Could not update job status:`, statusError);
+                }
+                
+                send({
+                  type: "status",
+                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts...`,
+                  totalContacts: totalContacts,
+                  currentPage: processedPages,
+                  totalPages: pages.length
+                });
+              }
+            }
+            
+            // Final batch save for any remaining contacts in buffer
+            if (contactsToSave.length > 0) {
+              const remainingBatch = contactsToSave.splice(0); // Clear buffer
+              try {
+                const contactsToUpsert = remainingBatch.map((contactData: any) => ({
+                  contact_id: contactData.id,
+                  page_id: contactData.pageId,
+                  user_id: userId,
+                  contact_name: contactData.name,
+                  page_name: contactData.page,
+                  last_message: contactData.lastMessage || null,
+                  last_message_time: contactData.lastMessageTime || null,
+                  last_contact_message_date: contactData.lastContactMessageDate || null,
+                  updated_at: contactData.updatedTime || new Date().toISOString(),
+                  tags: contactData.tags || [],
+                  role: contactData.role || "",
+                  avatar: contactData.avatar,
+                  date: contactData.date || null,
+                }));
+                
+                const dbBatchSavePromise = supabaseServer
+                  .from("contacts")
+                  .upsert(contactsToUpsert, {
+                    onConflict: "contact_id,page_id,user_id"
+                  });
+                
+                const saveTimeoutPromise = new Promise((_, reject) => 
+                  setTimeout(() => reject(new Error("Database batch save timeout")), 30000)
+                );
+                
+                try {
+                  await Promise.race([
+                    dbBatchSavePromise,
+                    saveTimeoutPromise
+                  ]);
+                  console.log(`   💾 Final batch saved ${remainingBatch.length} contacts to database`);
+                } catch (batchError: any) {
+                  if (batchError.message?.includes("timeout")) {
+                    console.warn(`⏱️ Final database batch save timeout, ${remainingBatch.length} contacts may not be saved`);
+                  } else {
+                    console.error(`❌ Error final batch saving contacts:`, batchError);
+                  }
+                }
+              } catch (batchError: any) {
+                console.error(`❌ Exception final batch saving contacts:`, batchError);
               }
             }
 
