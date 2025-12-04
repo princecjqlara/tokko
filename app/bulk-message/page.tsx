@@ -120,7 +120,7 @@ export default function BulkMessagePage() {
     const [pageSearchQuery, setPageSearchQuery] = useState("");
     const [showPageDropdown, setShowPageDropdown] = useState(false);
     const [dateFilter, setDateFilter] = useState("");
-    const [selectedContactIds, setSelectedContactIds] = useState<number[]>([]);
+    const [selectedContactIds, setSelectedContactIds] = useState<(string | number)[]>([]);
     const [message, setMessage] = useState("");
     const [contacts, setContacts] = useState<any[]>([]);
     const [pages, setPages] = useState<string[]>(["All Pages"]);
@@ -1290,7 +1290,8 @@ export default function BulkMessagePage() {
     };
 
     // Handlers
-    const toggleSelection = (id: number) => {
+    const toggleSelection = (id: string | number | undefined | null) => {
+        if (!id) return;
         setSelectedContactIds((prev) =>
             prev.includes(id) ? prev.filter((cid) => cid !== id) : [...prev, id]
         );
@@ -1333,7 +1334,10 @@ export default function BulkMessagePage() {
                 if (response.ok) {
                     // Remove from UI
                     setContacts(prev => {
-                        const updated = prev.filter(c => !selectedContactIds.includes(c.id));
+                        const updated = prev.filter(c => {
+                            const contactId = c.id || c.contact_id || c.contactId;
+                            return !selectedContactIds.includes(contactId);
+                        });
                         // Reset fetching progress totalContacts to match actual contacts count
                         setFetchingProgress(prevProgress => ({
                             ...prevProgress,
