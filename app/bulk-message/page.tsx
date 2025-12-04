@@ -318,6 +318,341 @@ export default function BulkMessagePage() {
     // Use stable userId to prevent dependency array size changes
     const userId = session?.user?.id || null;
     
+    // Define fetchContactsRealtime outside useEffect so it can be called from multiple places
+    const fetchContactsRealtime = React.useCallback(async () => {
+        // Prevent multiple simultaneous calls - check both refs
+        if (isFetchingRef.current || isConnectingRef.current) {
+            console.log("[Frontend] fetchContactsRealtime already in progress, skipping duplicate call", {
+                isFetching: isFetchingRef.current,
+                isConnecting: isConnectingRef.current
+            });
+            return;
+        }
+        
+        // Abort any existing connection first
+        if (abortControllerRef.current) {
+            console.log("[Frontend] Aborting existing connection before starting new one");
+            abortControllerRef.current.abort();
+            abortControllerRef.current = null;
+        }
+        
+        // Mark as connecting immediately to prevent race conditions
+        isConnectingRef.current = true;
+        isFetchingRef.current = true;
+        hasFetchedRef.current = true;
+        const storageKey = `hasFetched_${userId}`;
+        if (userId) localStorage.setItem(storageKey, 'true');
+        
+        // Get current contact count before starting - preserve existing count
+        const currentContactCount = contacts.length || fetchingProgress.totalContacts || 0;
+        
+        setIsLoading(true);
+        setFetchingProgress(prev => ({
+            ...prev,
+            isFetching: true,
+            // NEVER reset totalContacts to 0 if we already have contacts - always preserve the count
+            totalContacts: Math.max(currentContactCount, prev.totalContacts),
+            recentContacts: prev.recentContacts || [],
+            message: currentContactCount > 0 
+                ? `Resuming fetch... (${currentContactCount} contacts already loaded)`
+                : "Starting to fetch contacts..."
+        }));
+        
+        // Load existing contacts from database first (but still use stream for real-time updates)
+        try {
+            console.log("[Frontend] Checking for existing contacts in database...");
+            const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
+            if (existingResponse.ok) {
+                const existingData = await existingResponse.json();
+                console.log(`[Frontend] Received ${existingData.contacts?.length || 0} contacts from API`);
+                if (existingData.contacts && existingData.contacts.length > 0) {
+                    console.log(`[Frontend] Found ${existingData.contacts.length} existing contacts. Loading them into UI...`);
+                    setContacts(existingData.contacts);
+                    setFetchingProgress(prev => ({
+                        ...prev,
+                        totalContacts: existingData.contacts.length,
+                        message: `Loaded ${existingData.contacts.length} existing contacts. Fetching new ones...`
+                    }));
+                    // Continue to stream route to get real-time updates and fetch any new contacts
+                } else {
+                    console.log("[Frontend] No existing contacts found. Will fetch from Facebook API via stream...");
+                }
+            } else {
+                const errorText = await existingResponse.text();
+                let errorData;
+                try {
+                    errorData = JSON.parse(errorText);
+                } catch {
+                    errorData = { error: errorText };
+                }
+                
+                console.error("[Frontend] Error loading contacts:", errorData);
+                
+                // Check if it's a rate limit error
+                if (errorData.error === "Facebook API rate limit reached" || errorData.details?.includes("rate limit")) {
+                    setFetchingProgress(prev => ({
+                        ...prev,
+                        isFetching: false,
+                        message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
+                    }));
+                    setIsLoading(false);
+                    isFetchingRef.current = false;
+                    return;
+                }
+            }
+        } catch (e) {
+            console.error("[Frontend] Error loading existing contacts:", e);
+            console.log("No existing contacts found, starting fresh");
+        }
+
+        // Create abort controller for cancellation
+        abortControllerRef.current = new AbortController();
+
+        try {
+            if (!abortControllerRef.current) {
+                abortControllerRef.current = new AbortController();
+            }
+            console.log("[Frontend] Starting to fetch contacts from Facebook API via stream...");
+            // Build fetch URL with optional page filter
+            let fetchUrl = "/api/facebook/contacts/stream";
+            if (selectedPage && selectedPage !== "All Pages") {
+                // Find page ID from page name
+                const selectedPageData = pageData.find((p: any) => p.name === selectedPage);
+                if (selectedPageData?.id) {
+                    fetchUrl += `?pageId=${selectedPageData.id}`;
+                }
+            }
+            
+            const response = await fetch(fetchUrl, {
+                signal: abortControllerRef.current.signal
+            });
+            
+            if (!response.ok) {
+                const errorText = await response.text();
+                console.error("[Frontend] Stream response not OK:", response.status, errorText);
+                throw new Error(`Failed to start stream: ${response.status}`);
+            }
+            
+            console.log("[Frontend] Stream connection established. Reading data...");
+            const reader = response.body?.getReader();
+            const decoder = new TextDecoder();
+
+            if (!reader) {
+                throw new Error("Stream not available");
+            }
+
+            let buffer = "";
+            const recentContacts: any[] = [];
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split("\n");
+                buffer = lines.pop() || "";
+
+                for (const line of lines) {
+                    if (line.startsWith("data: ")) {
+                        try {
+                            const data = JSON.parse(line.slice(6));
+                            
+                            switch (data.type) {
+                                case "status":
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length),
+                                        // Update page number if provided to keep progress bar accurate
+                                        ...(data.currentPage !== undefined && {
+                                            currentPageNumber: Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                        }),
+                                        ...(data.totalPages !== undefined && { totalPages: data.totalPages }),
+                                        message: data.message || prev.message
+                                    }));
+                                    break;
+                                
+                                case "page_progress":
+                                    // Update progress bar during page processing without changing page name
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length),
+                                        // Update page number to keep progress bar accurate
+                                        currentPageNumber: data.currentPage !== undefined 
+                                            ? Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                            : prev.currentPageNumber,
+                                        totalPages: data.totalPages || prev.totalPages,
+                                        message: data.message || prev.message
+                                    }));
+                                    break;
+                                
+                                case "pages_fetched":
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        totalPages: data.totalPages,
+                                        message: data.message
+                                    }));
+                                    break;
+                                
+                                case "page_start":
+                                    // Only update page info when a new page actually starts
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        currentPage: data.pageName || prev.currentPage,
+                                        // NEVER decrease page number - only move forward
+                                        currentPageNumber: data.currentPage !== undefined 
+                                            ? Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                            : prev.currentPageNumber,
+                                        totalPages: data.totalPages || prev.totalPages,
+                                        message: data.message || prev.message
+                                    }));
+                                    break;
+                                
+                                case "page_conversations":
+                                    console.log("[Frontend] Page conversations:", data.conversationsCount, "in", data.pageName);
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        message: `Found ${data.conversationsCount} conversations in ${data.pageName}`
+                                    }));
+                                    break;
+                                
+                                case "contact":
+                                    // Add contact immediately to the list
+                                    setContacts(prev => {
+                                        // Avoid duplicates based on contact_id and page_id
+                                        const exists = prev.find(c => 
+                                            (c.id === data.contact.id || c.contact_id === data.contact.id) && 
+                                            (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId)
+                                        );
+                                        if (exists) {
+                                            // Update existing contact with new data
+                                            return prev.map(c => 
+                                                ((c.id === data.contact.id || c.contact_id === data.contact.id) && 
+                                                 (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId))
+                                                    ? { ...c, ...data.contact }
+                                                    : c
+                                            );
+                                        }
+                                        return [data.contact, ...prev];
+                                    });
+                                    
+                                    // Track recent contacts for animation
+                                    recentContacts.unshift(data.contact);
+                                    if (recentContacts.length > 5) recentContacts.pop();
+                                    
+                                    // Update progress with contact count - log every 100 contacts
+                                    if (data.totalContacts % 100 === 0) {
+                                        console.log("[Frontend] Total contacts so far:", data.totalContacts);
+                                    }
+                                    
+                                    // Calculate the maximum total to ensure count never decreases
+                                    const streamTotal = Math.max(data.totalContacts || 0, contacts.length);
+                                    
+                                    setFetchingProgress(prev => {
+                                        const finalTotal = Math.max(streamTotal, prev.totalContacts, contacts.length);
+                                        // DON'T update page info from contact events - only update count
+                                        // Page info should only change on page_start/page_complete events
+                                        // Only update message every 50 contacts to reduce UI flicker
+                                        const shouldUpdateMessage = finalTotal % 50 === 0 || prev.totalContacts === 0;
+                                        return {
+                                            ...prev,
+                                            // NEVER decrease totalContacts - always use maximum
+                                            totalContacts: finalTotal,
+                                            recentContacts: [...recentContacts],
+                                            // Only update message periodically to avoid constant UI flicker
+                                            // Keep the current page name stable - don't change it on every contact
+                                            message: shouldUpdateMessage && prev.currentPage 
+                                                ? `Processing ${prev.currentPage}... Found ${finalTotal} contacts so far...`
+                                                : prev.message || (prev.currentPage 
+                                                    ? `Processing ${prev.currentPage}...`
+                                                    : `Found ${finalTotal} contacts so far...`),
+                                            // Don't update page number or page name from contact events
+                                            // Only update totalPages if provided
+                                            ...(data.totalPages !== undefined && { totalPages: data.totalPages })
+                                        };
+                                    });
+                                    
+                                    // Extract tags
+                                    setTags(prev => {
+                                        const allTags = new Set(prev);
+                                        data.contact.tags?.forEach((tag: string) => allTags.add(tag));
+                                        return Array.from(allTags);
+                                    });
+                                    break;
+                                
+                                case "page_complete":
+                                    // Ensure total never decreases
+                                    const pageCompleteTotal = Math.max(data.totalContacts || 0, contacts.length);
+                                    setFetchingProgress(prev => {
+                                        const finalTotal = Math.max(pageCompleteTotal, prev.totalContacts, contacts.length);
+                                        // NEVER decrease page number - only move forward
+                                        const newPageNumber = data.currentPage !== undefined 
+                                            ? Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                            : prev.currentPageNumber;
+                                        return {
+                                            ...prev,
+                                            totalContacts: finalTotal,
+                                            // NEVER decrease page number - only move forward
+                                            ...(data.currentPage !== undefined && { currentPageNumber: newPageNumber }),
+                                            message: `✓ ${data.pageName}: ${data.contactsCount} contacts (Total: ${finalTotal})`
+                                        };
+                                    });
+                                    break;
+                                
+                                case "page_error":
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        message: `⚠ ${data.pageName}: ${data.error}`
+                                    }));
+                                    break;
+                                
+                                case "complete":
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        isFetching: false,
+                                        message: data.message,
+                                        // NEVER decrease totalContacts - always use maximum of all sources
+                                        totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length)
+                                    }));
+                                    setIsLoading(false);
+                                    isFetchingRef.current = false;
+                                    isConnectingRef.current = false;
+                                    abortControllerRef.current = null;
+                                    break;
+                                
+                                case "error":
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        isFetching: false,
+                                        message: `Error: ${data.message}`
+                                    }));
+                                    setIsLoading(false);
+                                    isFetchingRef.current = false;
+                                    isConnectingRef.current = false;
+                                    abortControllerRef.current = null;
+                                    break;
+                            }
+                        } catch (e) {
+                            console.error("Error parsing SSE data:", e);
+                        }
+                    }
+                }
+            }
+        } catch (error: any) {
+            console.error("[Frontend] Error fetching contacts:", error);
+            if (error.name !== "AbortError") {
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    isFetching: false,
+                    message: error.message || "Error fetching contacts"
+                }));
+                setIsLoading(false);
+            }
+            isFetchingRef.current = false;
+            isConnectingRef.current = false;
+            abortControllerRef.current = null;
+        }
+    }, [userId, contacts.length, fetchingProgress.totalContacts, selectedPage, pageData]);
+    
     useEffect(() => {
         if (status !== "authenticated" || !session || !userId) {
             console.log("[Frontend] Not authenticated yet, skipping...");
@@ -480,342 +815,7 @@ export default function BulkMessagePage() {
                 }
             });
         });
-        
-        const fetchContactsRealtime = async () => {
-            // Prevent multiple simultaneous calls - check both refs
-            if (isFetchingRef.current || isConnectingRef.current) {
-                console.log("[Frontend] fetchContactsRealtime already in progress, skipping duplicate call", {
-                    isFetching: isFetchingRef.current,
-                    isConnecting: isConnectingRef.current
-                });
-                return;
-            }
-            
-            // Abort any existing connection first
-            if (abortControllerRef.current) {
-                console.log("[Frontend] Aborting existing connection before starting new one");
-                abortControllerRef.current.abort();
-                abortControllerRef.current = null;
-            }
-            
-            // Mark as connecting immediately to prevent race conditions
-            isConnectingRef.current = true;
-            isFetchingRef.current = true;
-            hasFetchedRef.current = true;
-            if (userId) localStorage.setItem(storageKey, 'true');
-            
-            // Get current contact count before starting - preserve existing count
-            const currentContactCount = contacts.length || fetchingProgress.totalContacts || 0;
-            
-            setIsLoading(true);
-            setFetchingProgress(prev => ({
-                ...prev,
-                isFetching: true,
-                // NEVER reset totalContacts to 0 if we already have contacts - always preserve the count
-                totalContacts: Math.max(currentContactCount, prev.totalContacts),
-                recentContacts: prev.recentContacts || [],
-                message: currentContactCount > 0 
-                    ? `Resuming fetch... (${currentContactCount} contacts already loaded)`
-                    : "Starting to fetch contacts..."
-            }));
-            
-            // Load existing contacts from database first (but still use stream for real-time updates)
-            try {
-                console.log("[Frontend] Checking for existing contacts in database...");
-                const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
-                if (existingResponse.ok) {
-                    const existingData = await existingResponse.json();
-                    console.log(`[Frontend] Received ${existingData.contacts?.length || 0} contacts from API`);
-                    if (existingData.contacts && existingData.contacts.length > 0) {
-                        console.log(`[Frontend] Found ${existingData.contacts.length} existing contacts. Loading them into UI...`);
-                        setContacts(existingData.contacts);
-                        setFetchingProgress(prev => ({
-                            ...prev,
-                            totalContacts: existingData.contacts.length,
-                            message: `Loaded ${existingData.contacts.length} existing contacts. Fetching new ones...`
-                        }));
-                        // Continue to stream route to get real-time updates and fetch any new contacts
-                    } else {
-                        console.log("[Frontend] No existing contacts found. Will fetch from Facebook API via stream...");
-                    }
-                } else {
-                    const errorText = await existingResponse.text();
-                    let errorData;
-                    try {
-                        errorData = JSON.parse(errorText);
-                    } catch {
-                        errorData = { error: errorText };
-                    }
-                    
-                    console.error("[Frontend] Error loading contacts:", errorData);
-                    
-                    // Check if it's a rate limit error
-                    if (errorData.error === "Facebook API rate limit reached" || errorData.details?.includes("rate limit")) {
-                        setFetchingProgress(prev => ({
-                            ...prev,
-                            isFetching: false,
-                            message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
-                        }));
-                        setIsLoading(false);
-                        isFetchingRef.current = false;
-                        return;
-                    }
-                }
-            } catch (e) {
-                console.error("[Frontend] Error loading existing contacts:", e);
-                console.log("No existing contacts found, starting fresh");
-            }
-
-            // Create abort controller for cancellation
-            abortControllerRef.current = new AbortController();
-
-            try {
-                if (!abortControllerRef.current) {
-                    abortControllerRef.current = new AbortController();
-                }
-                console.log("[Frontend] Starting to fetch contacts from Facebook API via stream...");
-                // Build fetch URL with optional page filter
-                let fetchUrl = "/api/facebook/contacts/stream";
-                if (selectedPage && selectedPage !== "All Pages") {
-                    // Find page ID from page name
-                    const selectedPageData = pageData.find((p: any) => p.name === selectedPage);
-                    if (selectedPageData?.id) {
-                        fetchUrl += `?pageId=${selectedPageData.id}`;
-                    }
-                }
-                
-                const response = await fetch(fetchUrl, {
-                    signal: abortControllerRef.current.signal
-                });
-                
-                if (!response.ok) {
-                    const errorText = await response.text();
-                    console.error("[Frontend] Stream response not OK:", response.status, errorText);
-                    throw new Error(`Failed to start stream: ${response.status}`);
-                }
-                
-                console.log("[Frontend] Stream connection established. Reading data...");
-                const reader = response.body?.getReader();
-                const decoder = new TextDecoder();
-
-                if (!reader) {
-                    throw new Error("Stream not available");
-                }
-
-                let buffer = "";
-                const recentContacts: any[] = [];
-
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split("\n");
-                    buffer = lines.pop() || "";
-
-                    for (const line of lines) {
-                        if (line.startsWith("data: ")) {
-                            try {
-                                const data = JSON.parse(line.slice(6));
-                                
-                                switch (data.type) {
-                                    case "status":
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length),
-                                            // Update page number if provided to keep progress bar accurate
-                                            ...(data.currentPage !== undefined && {
-                                                currentPageNumber: Math.max(data.currentPage, prev.currentPageNumber || 0)
-                                            }),
-                                            ...(data.totalPages !== undefined && { totalPages: data.totalPages }),
-                                            message: data.message || prev.message
-                                        }));
-                                        break;
-                                    
-                                    case "page_progress":
-                                        // Update progress bar during page processing without changing page name
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length),
-                                            // Update page number to keep progress bar accurate
-                                            currentPageNumber: data.currentPage !== undefined 
-                                                ? Math.max(data.currentPage, prev.currentPageNumber || 0)
-                                                : prev.currentPageNumber,
-                                            totalPages: data.totalPages || prev.totalPages,
-                                            message: data.message || prev.message
-                                        }));
-                                        break;
-                                    
-                                    case "pages_fetched":
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            totalPages: data.totalPages,
-                                            message: data.message
-                                        }));
-                                        break;
-                                    
-                                    case "page_start":
-                                        // Only update page info when a new page actually starts
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            currentPage: data.pageName || prev.currentPage,
-                                            // NEVER decrease page number - only move forward
-                                            currentPageNumber: data.currentPage !== undefined 
-                                                ? Math.max(data.currentPage, prev.currentPageNumber || 0)
-                                                : prev.currentPageNumber,
-                                            totalPages: data.totalPages || prev.totalPages,
-                                            message: data.message || prev.message
-                                        }));
-                                        break;
-                                    
-                                    case "page_conversations":
-                                        console.log("[Frontend] Page conversations:", data.conversationsCount, "in", data.pageName);
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            message: `Found ${data.conversationsCount} conversations in ${data.pageName}`
-                                        }));
-                                        break;
-                                    
-                                    case "contact":
-                                        // Add contact immediately to the list
-                                        setContacts(prev => {
-                                            // Avoid duplicates based on contact_id and page_id
-                                            const exists = prev.find(c => 
-                                                (c.id === data.contact.id || c.contact_id === data.contact.id) && 
-                                                (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId)
-                                            );
-                                            if (exists) {
-                                                // Update existing contact with new data
-                                                return prev.map(c => 
-                                                    ((c.id === data.contact.id || c.contact_id === data.contact.id) && 
-                                                     (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId))
-                                                        ? { ...c, ...data.contact }
-                                                        : c
-                                                );
-                                            }
-                                            return [data.contact, ...prev];
-                                        });
-                                        
-                                        // Track recent contacts for animation
-                                        recentContacts.unshift(data.contact);
-                                        if (recentContacts.length > 5) recentContacts.pop();
-                                        
-                                        // Update progress with contact count - log every 100 contacts
-                                        if (data.totalContacts % 100 === 0) {
-                                            console.log("[Frontend] Total contacts so far:", data.totalContacts);
-                                        }
-                                        
-                                        // Calculate the maximum total to ensure count never decreases
-                                        const streamTotal = Math.max(data.totalContacts || 0, contacts.length);
-                                        
-                                        setFetchingProgress(prev => {
-                                            const finalTotal = Math.max(streamTotal, prev.totalContacts, contacts.length);
-                                            // DON'T update page info from contact events - only update count
-                                            // Page info should only change on page_start/page_complete events
-                                            // Only update message every 50 contacts to reduce UI flicker
-                                            const shouldUpdateMessage = finalTotal % 50 === 0 || prev.totalContacts === 0;
-                                            return {
-                                                ...prev,
-                                                // NEVER decrease totalContacts - always use maximum
-                                                totalContacts: finalTotal,
-                                                recentContacts: [...recentContacts],
-                                                // Only update message periodically to avoid constant UI flicker
-                                                // Keep the current page name stable - don't change it on every contact
-                                                message: shouldUpdateMessage && prev.currentPage 
-                                                    ? `Processing ${prev.currentPage}... Found ${finalTotal} contacts so far...`
-                                                    : prev.message || (prev.currentPage 
-                                                        ? `Processing ${prev.currentPage}...`
-                                                        : `Found ${finalTotal} contacts so far...`),
-                                                // Don't update page number or page name from contact events
-                                                // Only update totalPages if provided
-                                                ...(data.totalPages !== undefined && { totalPages: data.totalPages })
-                                            };
-                                        });
-                                        
-                                        // Extract tags
-                                        setTags(prev => {
-                                            const allTags = new Set(prev);
-                                            data.contact.tags?.forEach((tag: string) => allTags.add(tag));
-                                            return Array.from(allTags);
-                                        });
-                                        break;
-                                    
-                                    case "page_complete":
-                                        // Ensure total never decreases
-                                        const pageCompleteTotal = Math.max(data.totalContacts || 0, contacts.length);
-                                        setFetchingProgress(prev => {
-                                            const finalTotal = Math.max(pageCompleteTotal, prev.totalContacts, contacts.length);
-                                            // NEVER decrease page number - only move forward
-                                            const newPageNumber = data.currentPage !== undefined 
-                                                ? Math.max(data.currentPage, prev.currentPageNumber || 0)
-                                                : prev.currentPageNumber;
-                                            return {
-                                                ...prev,
-                                                totalContacts: finalTotal,
-                                                // NEVER decrease page number - only move forward
-                                                ...(data.currentPage !== undefined && { currentPageNumber: newPageNumber }),
-                                                message: `✓ ${data.pageName}: ${data.contactsCount} contacts (Total: ${finalTotal})`
-                                            };
-                                        });
-                                        break;
-                                    
-                                    case "page_error":
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            message: `⚠ ${data.pageName}: ${data.error}`
-                                        }));
-                                        break;
-                                    
-                                    case "complete":
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            isFetching: false,
-                                            message: data.message,
-                                            // NEVER decrease totalContacts - always use maximum of all sources
-                                            totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length)
-                                        }));
-                                        setIsLoading(false);
-                                        isFetchingRef.current = false;
-                                        isConnectingRef.current = false;
-                                        abortControllerRef.current = null;
-                                        break;
-                                    
-                                    case "error":
-                                        setFetchingProgress(prev => ({
-                                            ...prev,
-                                            isFetching: false,
-                                            message: `Error: ${data.message}`
-                                        }));
-                                        setIsLoading(false);
-                                        isFetchingRef.current = false;
-                                        isConnectingRef.current = false;
-                                        abortControllerRef.current = null;
-                                        break;
-                                }
-                            } catch (e) {
-                                console.error("Error parsing SSE data:", e);
-                            }
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error("Error fetching contacts:", error);
-                setFetchingProgress(prev => ({
-                    ...prev,
-                    isFetching: false,
-                    message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`
-                }));
-                setIsLoading(false);
-                isFetchingRef.current = false;
-                isConnectingRef.current = false;
-            }
-        };
-        
-        // Cleanup function to reset refs on unmount
-        return () => {
-            // Don't reset hasFetchedRef - we want to prevent refetching on re-renders
-        };
-    }, [status, userId]); // Use stable userId variable to keep array size constant
+    }, [status, userId, fetchContactsRealtime]); // Use stable userId variable to keep array size constant
     
     // Poll for job status and update UI (but don't trigger new connections)
     useEffect(() => {
@@ -960,10 +960,7 @@ export default function BulkMessagePage() {
                     // If there's a pending job and we're not already fetching, start fetching
                     if (jobData.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
                         console.log("[Frontend] New message detected, starting auto-fetch...");
-                        // Call fetchContactsRealtime via ref if it's available
-                        if (fetchContactsRealtimeRef.current) {
-                            fetchContactsRealtimeRef.current();
-                        }
+                        fetchContactsRealtime();
                     }
                 }
             } catch (error) {

@@ -207,9 +207,64 @@ export async function POST(request: NextRequest) {
           const firstName = contact.contact_name?.split(' ')[0] || 'there';
           personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
 
-          // Prepare message payload for Facebook Messenger API
-          // The recipient ID should be the PSID (Page-Scoped ID) of the contact
-          const messagePayload: any = {
+          // If attachment is provided, send media first, then text
+          // Facebook doesn't allow text and attachment in the same message
+          if (attachment && attachment.url) {
+            try {
+              // Determine attachment type (image, video, audio, or file)
+              const attachmentType = attachment.type || "file";
+              
+              // Send media attachment first
+              const mediaPayload: any = {
+                recipient: {
+                  id: contact.contact_id
+                },
+                message: {
+                  attachment: {
+                    type: attachmentType,
+                    payload: {
+                      url: attachment.url,
+                      is_reusable: true
+                    }
+                  }
+                },
+                messaging_type: "MESSAGE_TAG",
+                tag: "ACCOUNT_UPDATE"
+              };
+
+              const mediaResponse = await fetch(
+                `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify(mediaPayload),
+                }
+              );
+
+              const mediaData = await mediaResponse.json();
+
+              if (mediaResponse.ok && !mediaData.error) {
+                const typeLabel = attachmentType === "image" ? "image" : 
+                                 attachmentType === "video" ? "video" : 
+                                 attachmentType === "audio" ? "audio" : "file";
+                console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
+                // Wait a bit before sending text message
+                await new Promise(resolve => setTimeout(resolve, 500));
+              } else {
+                const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
+                console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
+                // Continue to send text message even if media fails
+              }
+            } catch (mediaError: any) {
+              console.error(`❌ Error sending media to ${contact.contact_name}:`, mediaError);
+              // Continue to send text message even if media fails
+            }
+          }
+
+          // Send text message (always send text, even if media was sent)
+          const textPayload: any = {
             recipient: {
               id: contact.contact_id
             },
@@ -217,24 +272,9 @@ export async function POST(request: NextRequest) {
               text: personalizedMessage
             },
             messaging_type: "MESSAGE_TAG",
-            tag: "ACCOUNT_UPDATE" // Use ACCOUNT_UPDATE tag for automated messages
+            tag: "ACCOUNT_UPDATE"
           };
 
-          // Add attachment if provided
-          if (attachment) {
-            // Handle attachment upload and sending
-            // For now, we'll support image attachments
-            messagePayload.message.attachment = {
-              type: "image",
-              payload: {
-                url: attachment.url,
-                is_reusable: true
-              }
-            };
-          }
-
-          // Send message via Facebook Graph API
-          // Use the page ID and page access token
           const sendResponse = await fetch(
             `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
             {
@@ -242,7 +282,7 @@ export async function POST(request: NextRequest) {
               headers: {
                 "Content-Type": "application/json",
               },
-              body: JSON.stringify(messagePayload),
+              body: JSON.stringify(textPayload),
             }
           );
 
@@ -254,7 +294,7 @@ export async function POST(request: NextRequest) {
           } else {
             results.failed++;
             const errorMsg = sendData.error?.message || "Unknown error";
-            console.error(`❌ Failed to send to ${contact.contact_name}:`, errorMsg);
+            console.error(`❌ Failed to send text to ${contact.contact_name}:`, errorMsg);
             results.errors.push({
               contact: contact.contact_name,
               page: contact.page_name,
