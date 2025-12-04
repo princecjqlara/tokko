@@ -129,7 +129,7 @@ export default function BulkMessagePage() {
     const [connectedPageIds, setConnectedPageIds] = useState<string[]>([]); // All pages are automatically connected
     const [isClient, setIsClient] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
-    const [isSending, setIsSending] = useState(false);
+    const [activeSends, setActiveSends] = useState(0);
     const [scheduleDate, setScheduleDate] = useState("");
     const [attachedFile, setAttachedFile] = useState<File | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1277,7 +1277,7 @@ export default function BulkMessagePage() {
             return;
         }
 
-        setIsSending(true);
+        setActiveSends(prev => prev + 1);
 
         try {
             // Upload file if attached
@@ -1349,7 +1349,7 @@ export default function BulkMessagePage() {
                 } catch (uploadError: any) {
                     console.error("Error uploading file:", uploadError);
                     alert(`Failed to upload file: ${uploadError.message || "Unknown error"}`);
-                    setIsSending(false);
+                    // Don't decrement here - let finally block handle it
                     return;
                 }
             }
@@ -1371,15 +1371,6 @@ export default function BulkMessagePage() {
 
             if (response.ok && data.success) {
                 alert(`✅ Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n⚠️ ${data.results.failed} failed.` : ''}`);
-                
-                // Clear form
-                setMessage("");
-                setSelectedContactIds([]);
-                setScheduleDate("");
-                setAttachedFile(null);
-                if (fileInputRef.current) {
-                    fileInputRef.current.value = "";
-                }
             } else {
                 alert(`❌ Failed to send messages: ${data.error || "Unknown error"}`);
             }
@@ -1387,7 +1378,20 @@ export default function BulkMessagePage() {
             console.error("Error sending broadcast:", error);
             alert(`❌ Error: ${error.message || "Failed to send messages"}`);
         } finally {
-            setIsSending(false);
+            setActiveSends(prev => {
+                const newCount = prev - 1;
+                // Clear form only if this was the last active send
+                if (newCount === 0) {
+                    setMessage("");
+                    setSelectedContactIds([]);
+                    setScheduleDate("");
+                    setAttachedFile(null);
+                    if (fileInputRef.current) {
+                        fileInputRef.current.value = "";
+                    }
+                }
+                return newCount;
+            });
         }
     };
 
@@ -2115,10 +2119,16 @@ export default function BulkMessagePage() {
                             </div>
                             <button 
                                 onClick={handleSendBroadcast}
-                                disabled={isSending || !message.trim() || selectedContactIds.length === 0}
+                                disabled={!message.trim() || selectedContactIds.length === 0}
                                 className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                             >
-                                <span>{isSending ? "Sending..." : scheduleDate ? "Schedule" : "Send Broadcast"}</span>
+                                <span>
+                                    {activeSends > 0 
+                                        ? `Sending... (${activeSends})` 
+                                        : scheduleDate 
+                                            ? "Schedule" 
+                                            : "Send Broadcast"}
+                                </span>
                                 <SendIcon />
                             </button>
                         </div>
