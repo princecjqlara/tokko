@@ -495,7 +495,7 @@ export async function GET(request: NextRequest) {
               continue;
             }
             
-            console.log(`📄 Fetching conversations for page: ${page.name} (${page.id})`);
+            console.log(`📄 [Stream Route] Starting to fetch conversations for page: ${page.name} (${page.id})`);
 
             // Fetch conversations - only get updated ones if we have a last update time
             let conversationsUrl: string;
@@ -610,7 +610,7 @@ export async function GET(request: NextRequest) {
               });
             }
 
-            console.log(`   📊 Page ${page.name}: Processing ${allConversations.length} total conversations`);
+            console.log(`   📊 [Stream Route] Page ${page.name}: Processing ${allConversations.length} total conversations`);
             
             send({
               type: "page_conversations",
@@ -618,15 +618,21 @@ export async function GET(request: NextRequest) {
               conversationsCount: allConversations.length,
               message: `Found ${allConversations.length} total conversations`
             });
+            
+            // Log heartbeat
+            console.log(`   💓 [Stream Route] Heartbeat: Starting to process ${allConversations.length} conversations for ${page.name}`);
 
             let pageContacts = 0;
             const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates in this session
             const processedContactKeys = new Set<string>(); // Track contacts already processed in this run
             
+            console.log(`   🔄 [Stream Route] Starting conversation processing loop for ${page.name} (${allConversations.length} conversations)`);
+            
             for (const conversation of allConversations) {
               // Check if paused periodically while processing conversations
               if (pageContacts % 50 === 0) {
                 await waitWhilePaused();
+                console.log(`   💓 [Stream Route] Heartbeat: Processed ${pageContacts}/${allConversations.length} conversations for ${page.name}`);
               }
               
               const participants = conversation.participants?.data || [];
