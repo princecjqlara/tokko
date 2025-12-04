@@ -610,38 +610,49 @@ export async function GET(request: NextRequest) {
                 if (contactData) {
                   // Check if contact already exists and if it needs updating
                   let shouldProcess = true;
+                  let isNewContact = true;
+                  
                   try {
-                    const { data: existingContact } = await supabaseServer
+                    const { data: existingContact, error: checkError } = await supabaseServer
                       .from("contacts")
-                      .select("updated_at, last_message_time")
+                      .select("updated_at, last_message_time, contact_id")
                       .eq("contact_id", contactData.id)
                       .eq("page_id", contactData.pageId)
                       .eq("user_id", userId)
-                      .single();
+                      .maybeSingle(); // Use maybeSingle() instead of single() to handle no results gracefully
                     
-                    if (existingContact) {
-                      // Check if conversation was updated (new messages)
+                    if (existingContact && !checkError) {
+                      isNewContact = false;
+                      // Contact exists - check if conversation was updated (new messages)
                       const existingUpdateTime = existingContact.updated_at ? new Date(existingContact.updated_at).getTime() : 0;
                       const conversationUpdateTime = new Date(conversation.updated_time).getTime();
                       
                       // Only process if conversation was updated AFTER the last contact update (new messages)
-                      // Add 5 second buffer to account for timing differences
-                      if (conversationUpdateTime <= (existingUpdateTime + 5000)) {
+                      // Add 10 second buffer to account for timing differences and processing delays
+                      if (conversationUpdateTime <= (existingUpdateTime + 10000)) {
                         shouldProcess = false;
                         processedContactKeys.add(contactKey); // Mark as processed
-                        // Skip this contact - no new messages
+                        // Skip this contact - no new messages, already processed
                         continue;
+                      } else {
+                        console.log(`   🔄 Contact ${contactData.id} has new messages (conversation updated ${Math.round((conversationUpdateTime - existingUpdateTime) / 1000)}s after last update)`);
                       }
+                    } else if (checkError && checkError.code !== 'PGRST116') {
+                      // PGRST116 is "no rows returned" which is expected for new contacts
+                      console.log(`   ⚠️ Error checking contact ${contactData.id}:`, checkError.message);
                     }
-                  } catch (checkError) {
+                  } catch (checkError: any) {
                     // If check fails, proceed with processing (might be new contact)
-                    console.log(`   ℹ️ Could not check existing contact ${contactData.id}, will process`);
+                    console.log(`   ℹ️ Could not check existing contact ${contactData.id}, will process as new`);
                   }
                   
                   if (shouldProcess) {
                     processedContactKeys.add(contactKey); // Mark as processed
+                    // Only add to allContacts if it's actually new or updated
                     allContacts.push(contactData);
-                    pageContacts++;
+                    if (isNewContact) {
+                      pageContacts++; // Only count new contacts, not updated ones
+                    }
                     
                     // Save contact to database
                     try {
