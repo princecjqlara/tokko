@@ -969,7 +969,7 @@ export default function BulkMessagePage() {
         }, 5000); // Poll every 5 seconds
 
         return () => clearInterval(pollInterval);
-    }, [status, session, fetchingProgress.isFetching]);
+    }, [status, session, fetchingProgress.isFetching, fetchContactsRealtime]);
 
     // All pages are automatically connected - no modal needed
 
