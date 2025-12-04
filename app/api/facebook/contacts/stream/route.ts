@@ -348,6 +348,44 @@ export async function GET(request: NextRequest) {
           
           processedPages = pageIndex + 1; // Current page number (1-based)
           
+          // Check if this page has been recently processed (within last 5 minutes)
+          // Get the most recent contact update time for this page
+          let lastPageUpdate: Date | null = null;
+          try {
+            const { data: lastContact } = await supabaseServer
+              .from("contacts")
+              .select("updated_at")
+              .eq("page_id", page.id)
+              .eq("user_id", userId)
+              .order("updated_at", { ascending: false })
+              .limit(1)
+              .single();
+            
+            if (lastContact?.updated_at) {
+              lastPageUpdate = new Date(lastContact.updated_at);
+              const minutesSinceUpdate = (Date.now() - lastPageUpdate.getTime()) / (1000 * 60);
+              
+              // Skip if page was updated within last 5 minutes (already processed recently)
+              if (minutesSinceUpdate < 5) {
+                console.log(`⏭️ Skipping page ${page.name} - processed ${Math.round(minutesSinceUpdate)} minutes ago`);
+                send({
+                  type: "page_start",
+                  pageName: page.name,
+                  pageId: page.id,
+                  currentPage: processedPages,
+                  totalPages: pages.length,
+                  message: `Skipping ${page.name} (processed ${Math.round(minutesSinceUpdate)} min ago)`,
+                  progress: Math.round((processedPages / pages.length) * 100)
+                });
+                // Still count as processed for progress
+                continue;
+              }
+            }
+          } catch (err) {
+            // If no contacts found or error, proceed with fetching
+            console.log(`📄 No previous contacts found for page ${page.name}, will fetch all`);
+          }
+          
           await updateJobStatus({
             status: "running",
             is_paused: false,
@@ -381,16 +419,28 @@ export async function GET(request: NextRequest) {
             
             console.log(`📄 Fetching conversations for page: ${page.name} (${page.id})`);
 
-            // Fetch ALL conversations with pagination
-            let allConversations: any[] = [];
-            let conversationsUrl: string | null = `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100`;
+            // Fetch conversations - only get updated ones if we have a last update time
+            let conversationsUrl: string;
+            if (lastPageUpdate) {
+              // Only fetch conversations updated since last fetch (with 1 minute buffer)
+              const sinceTime = Math.floor((lastPageUpdate.getTime() - 60000) / 1000); // 1 minute before last update
+              conversationsUrl = `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100&since=${sinceTime}`;
+              console.log(`   🔄 Fetching conversations updated since ${new Date(sinceTime * 1000).toISOString()}`);
+            } else {
+              // Fetch all conversations if no previous data
+              conversationsUrl = `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100`;
+            }
             
-            // Fetch all conversations with pagination
-            while (conversationsUrl) {
+            // Fetch conversations with pagination
+            let allConversations: any[] = [];
+            let currentConversationsUrl: string | null = conversationsUrl;
+            
+            // Fetch conversations with pagination
+            while (currentConversationsUrl) {
               // Check if paused before each API call
               await waitWhilePaused();
               
-              const conversationsResponse: Response = await fetch(conversationsUrl);
+              const conversationsResponse: Response = await fetch(currentConversationsUrl);
 
               if (conversationsResponse.ok) {
                 const conversationsData: any = await conversationsResponse.json();
@@ -400,7 +450,7 @@ export async function GET(request: NextRequest) {
                 console.log(`   ✅ Page ${page.name}: Fetched ${conversations.length} conversations (Total: ${allConversations.length})`);
 
                 // Check if there are more pages
-                conversationsUrl = conversationsData.paging?.next || null;
+                currentConversationsUrl = conversationsData.paging?.next || null;
                 
                 if (conversationsUrl) {
                   send({
@@ -430,7 +480,7 @@ export async function GET(request: NextRequest) {
                   pageName: page.name,
                   error: `${errorMessage}${errorCode ? ` (Code: ${errorCode})` : ''}`
                 });
-                conversationsUrl = null; // Stop pagination on error
+                currentConversationsUrl = null; // Stop pagination on error
               }
             }
 

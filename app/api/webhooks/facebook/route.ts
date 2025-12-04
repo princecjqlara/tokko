@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import crypto from "crypto";
+import { supabaseServer } from "@/lib/supabase-server";
 
 // Ensure this route is dynamic (not statically generated)
 export const runtime = 'nodejs';
@@ -149,7 +150,7 @@ async function handleConversationEvent(event: any, pageId: string) {
   }
 }
 
-// Store new contact (in a real app, use a database)
+// Store new contact in Supabase and trigger automatic fetching
 async function storeNewContact(
   contactId: string,
   pageId: string,
@@ -157,35 +158,116 @@ async function storeNewContact(
   timestamp: string | number,
   contactName?: string
 ) {
-  // In a production app, you'd store this in a database
-  // For now, we'll use a simple in-memory store or Supabase
-  // This is a placeholder - implement based on your storage solution
-  
-  const contactData = {
-    id: contactId,
-    name: contactName || `User ${contactId}`,
-    pageId,
-    lastMessage: message?.text || "",
-    lastMessageTime: new Date(parseInt(timestamp.toString()) * 1000).toISOString(),
-    updatedTime: new Date().toISOString(),
-    tags: [],
-    role: "",
-    avatar: (contactName || contactId).substring(0, 2).toUpperCase(),
-    date: new Date().toISOString().split('T')[0],
-  };
-
-  // Add to events store for real-time updates
   try {
-    const { addEvent } = await import("./events/route");
-    addEvent({
-      type: "new_contact",
-      contact: contactData,
-      timestamp: Date.now(),
+    const lastMessageTime = new Date(parseInt(timestamp.toString()) * 1000).toISOString();
+    const messageDate = lastMessageTime.split('T')[0];
+    
+    // Get page name from database
+    const { data: pageData } = await supabaseServer
+      .from("facebook_pages")
+      .select("page_name")
+      .eq("page_id", pageId)
+      .single();
+    
+    const pageName = pageData?.page_name || `Page ${pageId}`;
+    
+    // Get all users connected to this page
+    const { data: userPages } = await supabaseServer
+      .from("user_pages")
+      .select("user_id")
+      .eq("page_id", pageId);
+    
+    if (!userPages || userPages.length === 0) {
+      console.log(`No users connected to page ${pageId}, skipping contact storage`);
+      return null;
+    }
+    
+    // Store/update contact for each user connected to this page
+    const contactData = {
+      contact_id: contactId,
+      page_id: pageId,
+      contact_name: contactName || `User ${contactId}`,
+      page_name: pageName,
+      last_message: message?.text || "",
+      last_message_time: lastMessageTime,
+      last_contact_message_date: messageDate,
+      updated_at: new Date().toISOString(),
+      tags: [],
+      role: "",
+      avatar: (contactName || contactId || "U").substring(0, 2).toUpperCase(),
+      date: messageDate,
+    };
+    
+    // Upsert contact for each user
+    for (const userPage of userPages) {
+      const userId = userPage.user_id;
+      
+      const { error: upsertError } = await supabaseServer
+        .from("contacts")
+        .upsert({
+          ...contactData,
+          user_id: userId,
+        }, {
+          onConflict: "contact_id,page_id,user_id",
+        });
+      
+      if (upsertError) {
+        console.error(`Error storing contact ${contactId} for user ${userId}:`, upsertError);
+      } else {
+        console.log(`✅ Stored/updated contact ${contactId} for user ${userId} from page ${pageName}`);
+      }
+    }
+    
+    // Trigger automatic fetch for the page (async, don't wait)
+    triggerAutoFetch(pageId).catch(err => {
+      console.error(`Error triggering auto-fetch for page ${pageId}:`, err);
     });
+    
+    return contactData;
   } catch (error) {
-    console.error("Error adding event:", error);
+    console.error("Error storing new contact:", error);
+    return null;
   }
+}
 
-  return contactData;
+// Trigger automatic contact fetching for a specific page
+async function triggerAutoFetch(pageId: string) {
+  try {
+    // Get all users connected to this page
+    const { data: userPages } = await supabaseServer
+      .from("user_pages")
+      .select("user_id")
+      .eq("page_id", pageId);
+    
+    if (!userPages || userPages.length === 0) {
+      return;
+    }
+    
+    // For each user, create a background fetch job
+    for (const userPage of userPages) {
+      const userId = userPage.user_id;
+      
+      // Create a fetch job that will trigger automatic fetching
+      // The frontend will poll for this and start fetching if needed
+      await supabaseServer
+        .from("fetch_jobs")
+        .upsert({
+          user_id: userId,
+          status: "pending",
+          is_paused: false,
+          current_page_name: null,
+          current_page_number: null,
+          total_pages: null,
+          total_contacts: null,
+          message: `New message detected on page, auto-fetching contacts...`,
+        }, {
+          onConflict: "user_id",
+        });
+      
+      console.log(`✅ Triggered auto-fetch for user ${userId} due to new message on page ${pageId}`);
+    }
+  } catch (error) {
+    console.error("Error triggering auto-fetch:", error);
+  }
 }
 
