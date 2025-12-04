@@ -879,6 +879,7 @@ export async function GET(request: NextRequest) {
             // Final batch save for any remaining contacts in buffer
             if (contactsToSave.length > 0) {
               const remainingBatch = contactsToSave.splice(0); // Clear buffer
+              console.log(`   💾 [Stream Route] Saving final batch of ${remainingBatch.length} contacts for ${page.name}...`);
               try {
                 const contactsToUpsert = remainingBatch.map((contactData: any) => ({
                   contact_id: contactData.id,
@@ -911,27 +912,32 @@ export async function GET(request: NextRequest) {
                     dbBatchSavePromise,
                     saveTimeoutPromise
                   ]);
-                  console.log(`   💾 Final batch saved ${remainingBatch.length} contacts to database`);
+                  console.log(`   ✅ [Stream Route] Final batch saved ${remainingBatch.length} contacts to database for ${page.name}`);
                 } catch (batchError: any) {
                   if (batchError.message?.includes("timeout")) {
-                    console.warn(`⏱️ Final database batch save timeout, ${remainingBatch.length} contacts may not be saved`);
+                    console.warn(`⏱️ [Stream Route] Final database batch save timeout for ${page.name}, ${remainingBatch.length} contacts may not be saved`);
                   } else {
-                    console.error(`❌ Error final batch saving contacts:`, batchError);
+                    console.error(`❌ [Stream Route] Error final batch saving contacts for ${page.name}:`, batchError);
                   }
+                  // Continue even if save fails - don't block stream completion
                 }
               } catch (batchError: any) {
-                console.error(`❌ Exception final batch saving contacts:`, batchError);
+                console.error(`❌ [Stream Route] Exception final batch saving contacts for ${page.name}:`, batchError);
+                // Continue even if save fails - don't block stream completion
               }
+            } else {
+              console.log(`   ℹ️ [Stream Route] No remaining contacts to save for ${page.name}`);
             }
 
             const pageProcessingTime = ((Date.now() - pageProcessingStartTime) / 1000).toFixed(1);
             if (pageContacts > 0) {
-              console.log(`   ✅ Page ${page.name}: Added ${pageContacts} new contacts (${processedCount}/${allConversations.length} conversations processed in ${pageProcessingTime}s)`);
+              console.log(`   ✅ [Stream Route] Page ${page.name}: Added ${pageContacts} new contacts (${processedCount}/${allConversations.length} conversations processed in ${pageProcessingTime}s)`);
             } else {
-              console.log(`   ⏭️ Page ${page.name}: No new contacts (${processedCount}/${allConversations.length} conversations processed in ${pageProcessingTime}s)`);
+              console.log(`   ⏭️ [Stream Route] Page ${page.name}: No new contacts (${processedCount}/${allConversations.length} conversations processed in ${pageProcessingTime}s)`);
             }
             
             const totalContacts = existingContactCount + allContacts.length;
+            console.log(`   📊 [Stream Route] Sending page_complete event for ${page.name} (${pageContacts} contacts, ${totalContacts} total)`);
             send({
               type: "page_complete",
               pageName: page.name,
@@ -941,15 +947,21 @@ export async function GET(request: NextRequest) {
               totalPages: pages.length,
               message: `✓ Completed ${page.name}: ${pageContacts} new contacts (${totalContacts} total)`
             });
+            console.log(`   ✅ [Stream Route] Page ${page.name} processing complete, moving to next page...`);
           } catch (pageError: any) {
-            console.error(`❌ Error processing page ${page.name}:`, pageError);
+            console.error(`❌ [Stream Route] Error processing page ${page.name}:`, pageError);
+            console.error(`❌ [Stream Route] Error stack:`, pageError?.stack);
             send({
               type: "page_error",
               pageName: page.name,
               error: pageError?.message || "Unknown error"
             });
+            // Continue to next page even if this one fails
+            console.log(`   ⚠️ [Stream Route] Continuing to next page after error on ${page.name}...`);
           }
         }
+        
+        console.log(`✅ [Stream Route] Finished processing all ${pages.length} pages. Total contacts found: ${allContacts.length}`);
 
         // Clear timeout since we're completing normally
         if (streamTimeoutId) {
