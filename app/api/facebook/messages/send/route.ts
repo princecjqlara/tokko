@@ -122,18 +122,67 @@ export async function POST(request: NextRequest) {
       const firstContact = pageContacts[0];
       
       // Fetch page access token separately
-      const { data: pageData, error: pageError } = await supabaseServer
+      let { data: pageData, error: pageError } = await supabaseServer
         .from("facebook_pages")
         .select("page_id, page_access_token")
         .eq("page_id", pageId)
         .single();
+      
+      // If page not found, try to fetch it from Facebook API
+      if (pageError || !pageData) {
+        console.log(`Page ${pageId} not in database, fetching from Facebook API...`);
+        
+        try {
+          // Fetch pages from Facebook API
+          const pagesResponse = await fetch(
+            `https://graph.facebook.com/v18.0/me/accounts?access_token=${(session as any).accessToken}&fields=id,name,access_token&limit=1000`
+          );
+          
+          if (pagesResponse.ok) {
+            const pagesData = await pagesResponse.json();
+            const pages = pagesData.data || [];
+            
+            // Find the page we need
+            const foundPage = pages.find((p: any) => p.id === pageId);
+            
+            if (foundPage) {
+              // Store the page in database
+              const { error: storeError } = await supabaseServer
+                .from("facebook_pages")
+                .upsert({
+                  page_id: foundPage.id,
+                  page_name: foundPage.name,
+                  page_access_token: foundPage.access_token,
+                  updated_at: new Date().toISOString(),
+                }, {
+                  onConflict: "page_id",
+                });
+              
+              if (!storeError) {
+                // Retry fetching from database
+                const retryResult = await supabaseServer
+                  .from("facebook_pages")
+                  .select("page_id, page_access_token")
+                  .eq("page_id", pageId)
+                  .single();
+                
+                pageData = retryResult.data;
+                pageError = retryResult.error;
+                console.log(`✅ Successfully fetched and stored page ${pageId}`);
+              }
+            }
+          }
+        } catch (fetchError) {
+          console.error(`Error fetching page from Facebook API:`, fetchError);
+        }
+      }
       
       if (pageError || !pageData) {
         console.error(`No access token for page ${pageId}:`, pageError);
         results.failed += pageContacts.length;
         results.errors.push({
           page: firstContact.page_name,
-          error: "No access token available for this page"
+          error: "No access token available for this page. Please fetch pages first by visiting /api/facebook/pages"
         });
         continue;
       }
