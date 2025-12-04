@@ -108,23 +108,64 @@ export async function GET(request: NextRequest) {
 
     const userId = (session.user as any).id;
     
+    // Get the most recent fetch job for this user
+    const { data: job, error: jobError } = await supabaseServer
+      .from("fetch_jobs")
+      .select("*")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .limit(1)
+      .single();
+    
     // Check if contacts exist in database
-    const { supabaseServer } = await import("@/lib/supabase-server");
-    const { count, error } = await supabaseServer
+    const { count, error: countError } = await supabaseServer
       .from("contacts")
       .select("*", { count: "exact", head: true })
       .eq("user_id", userId);
     
-    if (error) {
-      console.error("Error checking contacts:", error);
+    if (countError) {
+      console.error("Error checking contacts:", countError);
     }
 
+    // If there's a job, return its status; otherwise return "idle"
+    const status = job?.status || "idle";
+    
     return NextResponse.json({
-      status: "running",
+      status: status,
       totalContacts: count || 0,
-      userId
+      userId,
+      job: job ? {
+        id: job.id,
+        status: job.status,
+        is_paused: job.is_paused,
+        message: job.message,
+        total_contacts: job.total_contacts,
+        current_page_name: job.current_page_name,
+        current_page_number: job.current_page_number,
+        total_pages: job.total_pages,
+        error: job.error,
+        updated_at: job.updated_at
+      } : null
     });
   } catch (error: any) {
+    // If no job found (single() throws error), return idle status
+    if (error.code === 'PGRST116') {
+      const session = await getServerSession(authOptions);
+      const userId = (session?.user as any)?.id;
+      
+      const { count } = await supabaseServer
+        .from("contacts")
+        .select("*", { count: "exact", head: true })
+        .eq("user_id", userId);
+      
+      return NextResponse.json({
+        status: "idle",
+        totalContacts: count || 0,
+        userId,
+        job: null
+      });
+    }
+    
     return NextResponse.json(
       { error: "Internal server error", details: error.message },
       { status: 500 }

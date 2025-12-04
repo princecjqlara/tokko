@@ -247,28 +247,55 @@ async function triggerAutoFetch(pageId: string) {
     for (const userPage of userPages) {
       const userId = userPage.user_id;
       
-      // Create a fetch job that will trigger automatic fetching
-      // Set status to "pending" to trigger a fetch for this specific page
-      await supabaseServer
+      // Check if there's an existing job for this user
+      const { data: existingJob } = await supabaseServer
         .from("fetch_jobs")
-        .upsert({
-          user_id: userId,
-          status: "pending",
-          is_paused: false,
-          current_page_name: null,
-          current_page_number: null,
-          total_pages: null,
-          total_contacts: null,
-          message: `New message detected, auto-fetching contacts for page ${pageId}...`,
-        }, {
-          onConflict: "user_id",
-        });
+        .select("id, status")
+        .eq("user_id", userId)
+        .in("status", ["pending", "running", "paused"])
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .single();
+      
+      if (existingJob) {
+        // If there's already a pending/running/paused job, update it to pending
+        await supabaseServer
+          .from("fetch_jobs")
+          .update({
+            status: "pending",
+            is_paused: false,
+            message: `New message detected, auto-fetching contacts for page ${pageId}...`,
+            updated_at: new Date().toISOString(),
+          })
+          .eq("id", existingJob.id);
+        
+        console.log(`✅ Updated existing job for user ${userId} to pending due to new message on page ${pageId}`);
+      } else {
+        // Create a new fetch job that will trigger automatic fetching
+        // Set status to "pending" to trigger a fetch for this specific page
+        const { error: insertError } = await supabaseServer
+          .from("fetch_jobs")
+          .insert({
+            user_id: userId,
+            status: "pending",
+            is_paused: false,
+            current_page_name: null,
+            current_page_number: null,
+            total_pages: null,
+            total_contacts: null,
+            message: `New message detected, auto-fetching contacts for page ${pageId}...`,
+          });
+        
+        if (insertError) {
+          console.error(`Error creating fetch job for user ${userId}:`, insertError);
+        } else {
+          console.log(`✅ Created new fetch job for user ${userId} due to new message on page ${pageId}`);
+        }
+      }
       
       // Note: Frontend will poll for new contacts via the existing polling mechanism
       // The fetch_jobs table entry will trigger the frontend to start fetching
       // We don't trigger server-side fetch here because it requires user session
-      
-      console.log(`✅ Triggered auto-fetch for user ${userId} due to new message on page ${pageId}`);
     }
   } catch (error) {
     console.error("Error triggering auto-fetch:", error);
