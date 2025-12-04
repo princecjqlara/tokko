@@ -90,7 +90,7 @@ export async function GET(request: NextRequest) {
         const updateJobStatus = async (updates: any) => {
           try {
             // Find existing running/paused job
-            const { data: existingJob } = await supabaseServer
+            const { data: existingJob, error: jobError } = await supabaseServer
               .from("fetch_jobs")
               .select("id")
               .eq("user_id", userId)
@@ -98,6 +98,13 @@ export async function GET(request: NextRequest) {
               .order("updated_at", { ascending: false })
               .limit(1)
               .single();
+            
+            // Check for database errors (distinct from PGRST116 "no rows" case)
+            if (jobError && jobError.code !== "PGRST116") {
+              console.error("Error fetching existing job:", jobError);
+              // Continue with creating a new job if we can't fetch existing one
+              // This prevents masking the error but allows the process to continue
+            }
             
             if (existingJob) {
               // Update existing job

@@ -376,6 +376,12 @@ export default function BulkMessagePage() {
                     // Continue to stream route to get real-time updates and fetch any new contacts
                 } else {
                     console.log("[Frontend] No existing contacts found. Will fetch from Facebook API via stream...");
+                    // Reset count to 0 if no contacts found
+                    setContacts([]);
+                    setFetchingProgress(prev => ({
+                        ...prev,
+                        totalContacts: 0
+                    }));
                 }
             } else {
                 const errorText = await existingResponse.text();
@@ -674,10 +680,23 @@ export default function BulkMessagePage() {
                             message: `Loaded ${existingData.contacts.length} contacts from database`
                         }));
                         return existingData.contacts.length;
+                    } else {
+                        // No contacts found - reset to 0
+                        setContacts([]);
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            totalContacts: 0
+                        }));
                     }
                 }
             } catch (e) {
                 console.error("[Frontend] Error loading existing contacts:", e);
+                // On error, reset to empty
+                setContacts([]);
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    totalContacts: 0
+                }));
             }
             return 0;
         };
@@ -714,10 +733,29 @@ export default function BulkMessagePage() {
                                         totalPages: job.total_pages,
                                         message: job.message || `Resuming fetch... (${existingData.contacts.length} contacts loaded)`
                                     }));
+                                } else {
+                                    // No contacts found - reset to 0
+                                    setContacts([]);
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        totalContacts: 0,
+                                        isFetching: job.status === "running" && !job.is_paused,
+                                        isPaused: job.is_paused || job.status === "paused",
+                                        currentPage: job.current_page_name,
+                                        currentPageNumber: job.current_page_number || prev.currentPageNumber,
+                                        totalPages: job.total_pages,
+                                        message: job.message || "No contacts found"
+                                    }));
                                 }
                             }
                         } catch (e) {
                             console.error("[Frontend] Error loading existing contacts:", e);
+                            // On error, reset to empty
+                            setContacts([]);
+                            setFetchingProgress(prev => ({
+                                ...prev,
+                                totalContacts: 0
+                            }));
                         }
                         
                         // Reconnect to stream if job is running and not paused
@@ -978,14 +1016,19 @@ export default function BulkMessagePage() {
         setCurrentPage(1);
     }, [selectedTag, selectedPage, searchQuery, dateFilter]);
 
-    // Computed total contacts - always use maximum to prevent countdown/reset
-    // This ensures the count never decreases, even if stream or polling resets
+    // Computed total contacts - use actual contacts length when not fetching
+    // Only use fetchingProgress.totalContacts during active fetching
     const displayTotalContacts = useMemo(() => {
-        return Math.max(
-            fetchingProgress.totalContacts || 0,
-            contacts.length || 0
-        );
-    }, [fetchingProgress.totalContacts, contacts.length]);
+        // If we're actively fetching, show the progress count
+        if (fetchingProgress.isFetching) {
+            return Math.max(
+                fetchingProgress.totalContacts || 0,
+                contacts.length || 0
+            );
+        }
+        // When not fetching, always use the actual contacts array length
+        return contacts.length || 0;
+    }, [fetchingProgress.totalContacts, fetchingProgress.isFetching, contacts.length]);
 
     // Filter contacts - show contacts from all connected pages by default, or filter by selected page
     const filteredContacts = useMemo(() => {
@@ -1157,7 +1200,15 @@ export default function BulkMessagePage() {
 
                 if (response.ok) {
                     // Remove from UI
-                    setContacts(prev => prev.filter(c => !selectedContactIds.includes(c.id)));
+                    setContacts(prev => {
+                        const updated = prev.filter(c => !selectedContactIds.includes(c.id));
+                        // Reset fetching progress totalContacts to match actual contacts count
+                        setFetchingProgress(prevProgress => ({
+                            ...prevProgress,
+                            totalContacts: updated.length
+                        }));
+                        return updated;
+                    });
                     setSelectedContactIds([]);
                 } else {
                     const error = await response.json();

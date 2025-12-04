@@ -98,6 +98,54 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // If scheduleDate is provided, store the message for later instead of sending immediately
+    if (scheduleDate) {
+      const scheduledDate = new Date(scheduleDate);
+      const now = new Date();
+      
+      if (scheduledDate <= now) {
+        return NextResponse.json(
+          { error: "Scheduled date must be in the future" },
+          { status: 400 }
+        );
+      }
+
+      // Store scheduled message in database
+      const { data: scheduledMessage, error: scheduleError } = await supabaseServer
+        .from("scheduled_messages")
+        .insert({
+          user_id: userId,
+          contact_ids: contactIds,
+          message: message.trim(),
+          attachment: attachment || null,
+          scheduled_for: scheduledDate.toISOString(),
+          status: "pending"
+        })
+        .select()
+        .single();
+
+      if (scheduleError) {
+        console.error("Error scheduling message:", scheduleError);
+        return NextResponse.json(
+          { error: "Failed to schedule message", details: scheduleError.message },
+          { status: 500 }
+        );
+      }
+
+      return NextResponse.json({
+        success: true,
+        results: {
+          total: contactIds.length,
+          sent: 0,
+          failed: 0,
+          errors: [],
+          scheduled: true,
+          scheduledMessageId: scheduledMessage.id,
+          scheduledFor: scheduledDate.toISOString()
+        }
+      });
+    }
+
     // Group contacts by page to send messages efficiently
     const contactsByPage = new Map<string, any[]>();
     
@@ -113,7 +161,7 @@ export async function POST(request: NextRequest) {
       success: 0,
       failed: 0,
       errors: [] as any[],
-      scheduled: scheduleDate ? true : false
+      scheduled: false
     };
 
     // Send messages to each page's contacts
