@@ -163,6 +163,8 @@ export default function BulkMessagePage() {
     const isConnectingRef = useRef(false); // Track if we're in the process of connecting
     const fetchContactsRealtimeRef = useRef<(() => void) | null>(null); // Ref to store fetchContactsRealtime function
     const isLoadingContactsRef = useRef(false); // Prevent multiple simultaneous contact loads
+    const lastContactLoadTimeRef = useRef<number>(0); // Track last contact load time to prevent rapid successive loads
+    const contactLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Debounce timeout
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -690,6 +692,31 @@ export default function BulkMessagePage() {
             return;
         }
         
+        // Clear any pending debounce timeout
+        if (contactLoadTimeoutRef.current) {
+            clearTimeout(contactLoadTimeoutRef.current);
+            contactLoadTimeoutRef.current = null;
+        }
+        
+        // Debounce contact loading - only load if it's been more than 2 seconds since last load
+        const now = Date.now();
+        const timeSinceLastLoad = now - lastContactLoadTimeRef.current;
+        const DEBOUNCE_DELAY = 2000; // 2 seconds
+        
+        if (timeSinceLastLoad < DEBOUNCE_DELAY) {
+            console.log(`[Frontend] Debouncing contact load - only ${timeSinceLastLoad}ms since last load`);
+            // Schedule a delayed load
+            contactLoadTimeoutRef.current = setTimeout(() => {
+                contactLoadTimeoutRef.current = null;
+                // Re-trigger this effect logic after debounce
+                if (status === "authenticated" && session && userId && !isFetchingRef.current && !fetchingProgress.isFetching && !isLoadingContactsRef.current) {
+                    lastContactLoadTimeRef.current = Date.now();
+                    // Will be handled by the effect running again
+                }
+            }, DEBOUNCE_DELAY - timeSinceLastLoad);
+            return;
+        }
+        
         // Always load existing contacts from database first on mount/refresh
         // BUT skip if we're currently fetching (to avoid resetting the UI)
         const loadExistingContacts = async () => {
@@ -699,8 +726,16 @@ export default function BulkMessagePage() {
                 return contacts.length;
             }
             
+            // Check if we already have contacts - don't reload unnecessarily
+            if (contacts.length > 0) {
+                console.log(`[Frontend] Already have ${contacts.length} contacts, skipping reload`);
+                return contacts.length;
+            }
+            
             isLoadingContactsRef.current = true;
+            lastContactLoadTimeRef.current = Date.now();
             try {
+                console.log("[Frontend] Loading contacts from database...");
                 const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
                 if (existingResponse.ok) {
                     const existingData = await existingResponse.json();
@@ -725,12 +760,14 @@ export default function BulkMessagePage() {
                 }
             } catch (e) {
                 console.error("[Frontend] Error loading existing contacts:", e);
-                // On error, reset to empty
-                setContacts([]);
-                setFetchingProgress(prev => ({
-                    ...prev,
-                    totalContacts: 0
-                }));
+                // On error, only reset if we don't have contacts
+                if (contacts.length === 0) {
+                    setContacts([]);
+                    setFetchingProgress(prev => ({
+                        ...prev,
+                        totalContacts: 0
+                    }));
+                }
             } finally {
                 isLoadingContactsRef.current = false;
             }
@@ -750,9 +787,14 @@ export default function BulkMessagePage() {
                         console.log("[Frontend] Found active job, will reconnect to stream");
                         // Only load existing contacts if we don't have any and we're not fetching
                         // This prevents resetting the UI during an active fetch
-                        if (!isFetchingRef.current && !fetchingProgress.isFetching && contacts.length === 0 && !isLoadingContactsRef.current) {
+                        // Also check debounce - don't load if we just loaded recently
+                        const now = Date.now();
+                        const timeSinceLastLoad = now - lastContactLoadTimeRef.current;
+                        if (!isFetchingRef.current && !fetchingProgress.isFetching && contacts.length === 0 && !isLoadingContactsRef.current && timeSinceLastLoad > 2000) {
                             isLoadingContactsRef.current = true;
+                            lastContactLoadTimeRef.current = Date.now();
                             try {
+                                console.log("[Frontend] Loading contacts for reconnect...");
                                 const existingResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
                                 if (existingResponse.ok) {
                                     const existingData = await existingResponse.json();
@@ -910,6 +952,14 @@ export default function BulkMessagePage() {
                 }
             });
         });
+        
+        // Cleanup: clear any pending debounce timeout
+        return () => {
+            if (contactLoadTimeoutRef.current) {
+                clearTimeout(contactLoadTimeoutRef.current);
+                contactLoadTimeoutRef.current = null;
+            }
+        };
     }, [status, userId, fetchContactsRealtime]); // Use stable userId variable to keep array size constant
     
     // Poll for job status and update UI (but don't trigger new connections)
