@@ -161,37 +161,47 @@ export async function GET(request: NextRequest) {
         }));
 
         // Use Supabase to store pages (allows multiple users to access same page)
-        const { error: dbError } = await supabaseServer
+        // IMPORTANT: Must insert pages first before creating relations
+        const { data: insertedPages, error: dbError } = await supabaseServer
           .from("facebook_pages")
           .upsert(pagesToUpsert, {
             onConflict: "page_id",
             ignoreDuplicates: false,
-          });
+          })
+          .select();
 
         if (dbError) {
           console.error("Error storing pages in database:", dbError);
-          // Continue even if database storage fails
-        }
-
-        // Automatically connect all pages for the user
-        const userPageRelations = uniquePages.map((page) => ({
-          user_id: userId,
-          page_id: page.id,
-          connected_at: new Date().toISOString(),
-        }));
-
-        const { error: relationError } = await supabaseServer
-          .from("user_pages")
-          .upsert(userPageRelations, {
-            onConflict: "user_id,page_id",
-            ignoreDuplicates: false,
-          });
-
-        if (relationError) {
-          console.error("Error storing user-page relations:", relationError);
-          // Continue even if relation storage fails
+          // Continue even if database storage fails, but don't create relations
         } else {
-          console.log(`Automatically connected ${uniquePages.length} pages for user ${userId}`);
+          // Only create user-page relations if pages were successfully stored
+          // Filter to only include pages that were actually inserted/updated
+          const successfullyStoredPageIds = insertedPages?.map(p => p.page_id) || pagesToUpsert.map(p => p.page_id);
+          
+          // Automatically connect all pages for the user (only for successfully stored pages)
+          const userPageRelations = uniquePages
+            .filter((page) => successfullyStoredPageIds.includes(page.id))
+            .map((page) => ({
+              user_id: userId,
+              page_id: page.id,
+              connected_at: new Date().toISOString(),
+            }));
+
+          if (userPageRelations.length > 0) {
+            const { error: relationError } = await supabaseServer
+              .from("user_pages")
+              .upsert(userPageRelations, {
+                onConflict: "user_id,page_id",
+                ignoreDuplicates: false,
+              });
+
+            if (relationError) {
+              console.error("Error storing user-page relations:", relationError);
+              // Continue even if relation storage fails
+            } else {
+              console.log(`Automatically connected ${userPageRelations.length} pages for user ${userId}`);
+            }
+          }
         }
       } catch (dbError) {
         console.error("Database error:", dbError);
