@@ -420,6 +420,9 @@ export async function GET(request: NextRequest) {
 
         // Reset allContacts array for this stream
         allContacts = [];
+        // Use a global Set to track unique contacts across ALL pages (not just per-page)
+        // This prevents counting the same contact multiple times if they appear in multiple pages
+        const globalSeenContactKeys = new Set<string>();
         let processedPages = 0; // Track number of pages actually processed (not skipped)
         let lastSentContactCount = existingContactCount; // Track last sent count globally to ensure it never decreases
         
@@ -738,8 +741,8 @@ export async function GET(request: NextRequest) {
             console.log(`   💓 [Stream Route] Heartbeat: Starting to process ${allConversations.length} conversations for ${page.name}`);
 
             let pageContacts = 0;
-            const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates in this session
-            const processedContactKeys = new Set<string>(); // Track contacts already processed in this run
+            const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates within this page
+            const processedContactKeys = new Set<string>(); // Track contacts already processed in this page
             const contactsToSave: any[] = []; // Batch buffer for database saves
             
             console.log(`   🔄 [Stream Route] Starting conversation processing loop for ${page.name} (${allConversations.length} conversations)`);
@@ -899,10 +902,21 @@ export async function GET(request: NextRequest) {
                     continue;
                   }
                   
-                  // Mark as processed
-                  processedContactKeys.add(contactKey);
+                  // Check if this contact was already seen across ALL pages (not just this page)
+                  // This prevents counting the same contact multiple times if they appear in multiple pages
+                  if (globalSeenContactKeys.has(contactKey)) {
+                    // Contact already seen in a previous page - skip adding to allContacts but still save to DB
+                    // (DB upsert will handle duplicates, but we don't want to count them twice)
+                    contactsToSave.push(contactData);
+                    // Don't increment pageContacts or add to allContacts for duplicates across pages
+                    continue;
+                  }
                   
-                  // Add to collections
+                  // Mark as processed (both locally and globally)
+                  processedContactKeys.add(contactKey);
+                  globalSeenContactKeys.add(contactKey);
+                  
+                  // Add to collections (only if it's a new unique contact)
                   allContacts.push(contactData);
                   contactsToSave.push(contactData);
                   pageContacts++;
