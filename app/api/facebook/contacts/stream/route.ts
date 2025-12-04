@@ -434,6 +434,21 @@ export async function GET(request: NextRequest) {
         });
 
         for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+          // Check if we're approaching timeout before processing each page
+          if (checkTimeout()) {
+            console.log(`⏰ [Stream Route] Timeout approaching, stopping after ${processedPages} pages`);
+            send({
+              type: "status",
+              message: `Processed ${processedPages}/${pages.length} pages before timeout. You can sync again to continue.`,
+              totalContacts: existingContactCount + allContacts.length,
+              currentPage: processedPages,
+              totalPages: pages.length
+            });
+            // Update processedPagesCount for timeout handler
+            processedPagesCount = processedPages;
+            break; // Exit the loop
+          }
+          
           const page = pages[pageIndex];
           
           // Skip page if filter is specified and this page doesn't match
