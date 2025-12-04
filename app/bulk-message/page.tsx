@@ -161,7 +161,7 @@ export default function BulkMessagePage() {
     const abortControllerRef = useRef<AbortController | null>(null);
     const isPausedRef = useRef(false);
     const isConnectingRef = useRef(false); // Track if we're in the process of connecting
-    const fetchContactsRealtimeRef = useRef<(() => void) | null>(null); // Ref to store fetchContactsRealtime function
+    const fetchContactsRealtimeRef = useRef<(() => Promise<void>) | null>(null); // Ref to store fetchContactsRealtime function
     const isLoadingContactsRef = useRef(false); // Prevent multiple simultaneous contact loads
     const lastContactLoadTimeRef = useRef<number>(0); // Track last contact load time to prevent rapid successive loads
     const contactLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Debounce timeout
@@ -684,7 +684,12 @@ export default function BulkMessagePage() {
             }
             abortControllerRef.current = null;
         }
-    }, [userId, contacts.length, fetchingProgress.totalContacts, selectedPage, pageData]);
+    }, [userId, selectedPage, pageData]); // Removed contacts.length and fetchingProgress.totalContacts to prevent circular dependency
+    
+    // Store the latest fetchContactsRealtime in a ref so it can be called from useEffect without dependency issues
+    useEffect(() => {
+        fetchContactsRealtimeRef.current = fetchContactsRealtime;
+    }, [fetchContactsRealtime]);
     
     useEffect(() => {
         if (status !== "authenticated" || !session || !userId) {
@@ -941,7 +946,8 @@ export default function BulkMessagePage() {
                                 
                                 // Then fetch contacts in real-time (only if not already fetching and should fetch)
                                 if (!isFetchingRef.current && (shouldReconnect || !storedHasFetched)) {
-                                    fetchContactsRealtime();
+                                    const fetchFn = fetchContactsRealtimeRef.current || fetchContactsRealtime;
+                                    fetchFn();
                                 }
                             });
                         }
@@ -961,7 +967,7 @@ export default function BulkMessagePage() {
                 contactLoadTimeoutRef.current = null;
             }
         };
-    }, [status, userId, fetchContactsRealtime]); // Use stable userId variable to keep array size constant
+    }, [status, userId]); // Removed fetchContactsRealtime from dependencies - use ref instead to avoid re-runs
     
     // Poll for job status and update UI (but don't trigger new connections)
     useEffect(() => {

@@ -377,7 +377,7 @@ export async function GET(request: NextRequest) {
         });
 
         const allContacts: any[] = [];
-        let processedPages = 0;
+        let processedPages = 0; // Track number of pages actually processed (not skipped)
         let lastSentContactCount = existingContactCount; // Track last sent count globally to ensure it never decreases
         
         // Send initial status update with existing count
@@ -402,7 +402,8 @@ export async function GET(request: NextRequest) {
           // Check if paused before processing each page
           await waitWhilePaused();
           
-          processedPages = pageIndex + 1; // Current page number (1-based)
+          // Use pageIndex + 1 for display (which page in the list we're on)
+          const currentPageNumber = pageIndex + 1; // Current page number in list (1-based)
           
           // Check if this page has been recently processed (within last 5 minutes)
           // Get the most recent contact update time for this page
@@ -449,12 +450,12 @@ export async function GET(request: NextRequest) {
                   type: "page_start",
                   pageName: page.name,
                   pageId: page.id,
-                  currentPage: processedPages,
+                  currentPage: currentPageNumber,
                   totalPages: pages.length,
                   message: `Skipping ${page.name} (processed ${Math.round(minutesSinceUpdate * 10) / 10} min ago)`,
-                  progress: Math.round((processedPages / pages.length) * 100)
+                  progress: Math.round((currentPageNumber / pages.length) * 100)
                 });
-                // Still count as processed for progress
+                // Don't increment processedPages since we skipped this page
                 continue;
               } else {
                 console.log(`🔄 Page ${page.name} was last updated ${Math.round(minutesSinceUpdate * 10) / 10} minutes ago - will fetch only new conversations`);
@@ -465,24 +466,27 @@ export async function GET(request: NextRequest) {
             console.log(`📄 No previous contacts found for page ${page.name}, will fetch all`);
           }
           
+          // Increment processedPages only when we actually start processing a page
+          processedPages++;
+          
           await updateJobStatus({
             status: "running",
             is_paused: false,
             current_page_name: page.name,
-            current_page_number: processedPages,
+            current_page_number: currentPageNumber,
             total_pages: pages.length,
             total_contacts: existingContactCount + allContacts.length,
-            message: `Processing page ${processedPages}/${pages.length}: ${page.name}`
+            message: `Processing page ${currentPageNumber}/${pages.length}: ${page.name}`
           });
           
             send({
               type: "page_start",
               pageName: page.name,
               pageId: page.id,
-              currentPage: processedPages,
+              currentPage: currentPageNumber,
               totalPages: pages.length,
-              message: `Processing page ${processedPages}/${pages.length}: ${page.name}`,
-              progress: Math.round((processedPages / pages.length) * 100)
+              message: `Processing page ${currentPageNumber}/${pages.length}: ${page.name}`,
+              progress: Math.round((currentPageNumber / pages.length) * 100)
             });
 
           try {
@@ -676,7 +680,7 @@ export async function GET(request: NextRequest) {
                   type: "status",
                   message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeCurrentTotal} total contacts (${allContacts.length} new)...`,
                   totalContacts: safeCurrentTotal,
-                  currentPage: processedPages,
+                  currentPage: currentPageNumber,
                   totalPages: pages.length,
                   progress: Math.round((processedCount / allConversations.length) * 100),
                 });
@@ -813,7 +817,7 @@ export async function GET(request: NextRequest) {
                       type: "status",
                       message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
                       totalContacts: safeTotalContacts,
-                      currentPage: processedPages,
+                      currentPage: currentPageNumber,
                       totalPages: pages.length,
                       progress: Math.round((processedCount / allConversations.length) * 100)
                     });
@@ -895,7 +899,7 @@ export async function GET(request: NextRequest) {
                   status: "running",
                   is_paused: false,
                   current_page_name: page.name,
-                  current_page_number: processedPages,
+                  current_page_number: currentPageNumber,
                   total_pages: pages.length,
                   total_contacts: safeTotalContacts,
                   message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new)...`
@@ -908,7 +912,7 @@ export async function GET(request: NextRequest) {
                   type: "status",
                   message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
                   totalContacts: safeTotalContacts,
-                  currentPage: processedPages,
+                  currentPage: currentPageNumber,
                   totalPages: pages.length,
                   progress: Math.round((processedCount / allConversations.length) * 100)
                 });
@@ -986,7 +990,7 @@ export async function GET(request: NextRequest) {
               pageName: page.name,
               contactsCount: pageContacts,
               totalContacts: safeTotalContacts,
-              currentPage: processedPages,
+              currentPage: currentPageNumber,
               totalPages: pages.length,
               message: `✓ Completed ${page.name}: ${pageContacts} new contacts (${safeTotalContacts} total)`
             });
