@@ -1774,7 +1774,7 @@ export default function BulkMessagePage() {
                         <button
                             type="button"
                             onClick={() => setShowPageDropdown(!showPageDropdown)}
-                            disabled={isLoading || pages.length === 1 || fetchingProgress.isFetching}
+                            disabled={isLoading || pages.length === 1}
                             className="w-full flex items-center justify-between rounded-xl bg-zinc-900/50 border border-white/10 py-3 px-4 text-sm text-zinc-100 outline-none transition-all focus:bg-zinc-900 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 backdrop-blur-sm disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <span>{selectedPage}</span>
@@ -1885,7 +1885,7 @@ export default function BulkMessagePage() {
                     <div className="flex items-center justify-between px-2 h-10">
                         <button
                             onClick={toggleSelectPage}
-                            disabled={isLoading || fetchingProgress.isFetching}
+                            disabled={isLoading}
                             className="flex items-center gap-3 text-sm font-medium text-zinc-400 hover:text-zinc-200 transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <div
@@ -1921,8 +1921,7 @@ export default function BulkMessagePage() {
                             <span>All {paginatedContacts.length} contacts on this page are selected.</span>
                             <button
                                 onClick={selectAllFiltered}
-                                disabled={fetchingProgress.isFetching}
-                                className={`ml-2 font-semibold text-indigo-400 hover:underline ${fetchingProgress.isFetching ? "opacity-50 cursor-not-allowed" : ""}`}
+                                className="ml-2 font-semibold text-indigo-400 hover:underline"
                             >
                                 Select all {filteredContacts.length} contacts in this list
                             </button>
@@ -1933,8 +1932,7 @@ export default function BulkMessagePage() {
                             <span>All {filteredContacts.length} contacts in this list are selected.</span>
                             <button
                                 onClick={clearSelection}
-                                disabled={fetchingProgress.isFetching}
-                                className={`ml-2 font-semibold text-indigo-400 hover:underline ${fetchingProgress.isFetching ? "opacity-50 cursor-not-allowed" : ""}`}
+                                className="ml-2 font-semibold text-indigo-400 hover:underline"
                             >
                                 Clear selection
                             </button>
