@@ -1167,10 +1167,25 @@ export default function BulkMessagePage() {
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (file) {
-            if (file.size > 25 * 1024 * 1024) { // 25MB limit
+            // Validate file size (25MB limit)
+            if (file.size > 25 * 1024 * 1024) {
                 alert("File size exceeds 25MB limit.");
+                if (fileInputRef.current) {
+                    fileInputRef.current.value = "";
+                }
                 return;
             }
+            
+            // Validate file type (only images)
+            const validImageTypes = ["image/jpeg", "image/jpg", "image/png", "image/gif", "image/webp"];
+            if (!validImageTypes.includes(file.type)) {
+                alert("Only image files are allowed (JPEG, PNG, GIF, WebP).");
+                if (fileInputRef.current) {
+                    fileInputRef.current.value = "";
+                }
+                return;
+            }
+            
             setAttachedFile(file);
         }
     };
@@ -1197,18 +1212,33 @@ export default function BulkMessagePage() {
         setIsSending(true);
 
         try {
-            // Prepare attachment if file is selected
+            // Upload file if attached
             let attachment = null;
             if (attachedFile) {
-                // For now, we'll need to upload the file first
-                // This is a simplified version - you may want to upload to a storage service first
-                const formData = new FormData();
-                formData.append("file", attachedFile);
-                
-                // TODO: Upload file to storage and get URL
-                // For now, we'll skip attachment if file is too large
-                if (attachedFile.size > 25 * 1024 * 1024) {
-                    alert("File size must be less than 25MB");
+                try {
+                    // Upload file to storage
+                    const uploadFormData = new FormData();
+                    uploadFormData.append("file", attachedFile);
+                    
+                    const uploadResponse = await fetch("/api/upload", {
+                        method: "POST",
+                        body: uploadFormData,
+                    });
+
+                    const uploadData = await uploadResponse.json();
+
+                    if (!uploadResponse.ok || !uploadData.success) {
+                        throw new Error(uploadData.error || "Failed to upload file");
+                    }
+
+                    // Set attachment with the uploaded URL
+                    attachment = {
+                        url: uploadData.url,
+                        type: "image"
+                    };
+                } catch (uploadError: any) {
+                    console.error("Error uploading file:", uploadError);
+                    alert(`Failed to upload file: ${uploadError.message || "Unknown error"}`);
                     setIsSending(false);
                     return;
                 }
@@ -1768,14 +1798,14 @@ export default function BulkMessagePage() {
                             // Expanded Widget
                             <div className="rounded-2xl border border-indigo-500/20 bg-gradient-to-br from-indigo-500/10 to-purple-500/10 backdrop-blur-sm shadow-2xl">
                                 <div className="p-4">
-                                    <div className="flex items-start justify-between mb-3">
+                                    <div className="flex items-start justify-between mb-3 gap-4">
                                         <div className="flex-1 min-w-0">
                                             <div className="flex items-center gap-3 mb-2">
                                                 {fetchingProgress.isFetching && (
                                                     <div className="h-4 w-4 animate-spin rounded-full border-2 border-indigo-400 border-t-transparent flex-shrink-0"></div>
                                                 )}
                                                 <h3 className="text-sm font-semibold text-white truncate">Fetching Contacts in Real-Time</h3>
-                                                <div className="ml-auto flex items-center gap-2">
+                                                <div className="ml-auto flex items-center gap-2 flex-shrink-0">
                                                     {fetchingProgress.isFetching && (
                                                         <>
                                                             <button
@@ -1807,24 +1837,24 @@ export default function BulkMessagePage() {
                                                     </button>
                                                 </div>
                                             </div>
-                                            {fetchingProgress.currentPage && (
-                                                <p className="text-xs text-zinc-400 ml-7 truncate">
-                                                    Processing: <span className="text-indigo-400 font-medium">{fetchingProgress.currentPage}</span>
-                                                    {fetchingProgress.currentPageNumber !== undefined && fetchingProgress.totalPages !== undefined && (
-                                                        <span className="text-zinc-500"> ({fetchingProgress.currentPageNumber}/{fetchingProgress.totalPages})</span>
-                                                    )}
-                                                </p>
-                                            )}
-                                            {fetchingProgress.message && (
-                                                <p className="text-xs text-zinc-500 mt-1 ml-7 truncate">{fetchingProgress.message}</p>
-                                            )}
-                                            {displayTotalContacts > 0 && (
-                                                <p className="text-xs text-indigo-400 ml-7 mt-1 font-medium">
-                                                    Total Contacts: {displayTotalContacts.toLocaleString()}
-                                                </p>
-                                            )}
+                                            <div className="space-y-1">
+                                                {fetchingProgress.currentPage && fetchingProgress.currentPageNumber !== undefined && fetchingProgress.totalPages !== undefined && (
+                                                    <p className="text-xs text-zinc-400 truncate">
+                                                        Processing: <span className="text-indigo-400 font-medium">{fetchingProgress.currentPage}</span>
+                                                        <span className="text-zinc-500 ml-1">({fetchingProgress.currentPageNumber}/{fetchingProgress.totalPages})</span>
+                                                    </p>
+                                                )}
+                                                {fetchingProgress.message && (
+                                                    <p className="text-xs text-zinc-500 truncate">{fetchingProgress.message}</p>
+                                                )}
+                                                {displayTotalContacts > 0 && (
+                                                    <p className="text-xs text-indigo-400 font-medium">
+                                                        Total Contacts: {displayTotalContacts.toLocaleString()}
+                                                    </p>
+                                                )}
+                                            </div>
                                         </div>
-                                        <div className="text-right flex-shrink-0 ml-4">
+                                        <div className="text-right flex-shrink-0">
                                             <div className="text-2xl font-bold text-indigo-400">{displayTotalContacts.toLocaleString()}</div>
                                             <div className="text-xs text-zinc-500">contacts</div>
                                         </div>
@@ -1837,13 +1867,11 @@ export default function BulkMessagePage() {
                                                 <div 
                                                     className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
                                                     style={{ 
-                                                        // Show progress based on current page being processed (more accurate)
-                                                        // If on page 8 of 52, show 8/52 = 15.4% (page 8 is in progress)
                                                         width: `${Math.min(100, Math.max(0, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100))}%` 
                                                     }}
                                                 />
                                             </div>
-                                            <div className="flex justify-between text-xs text-zinc-500 mt-1">
+                                            <div className="flex justify-between items-center text-xs text-zinc-500 mt-1">
                                                 <span>Page {fetchingProgress.currentPageNumber} of {fetchingProgress.totalPages}</span>
                                                 <span>{Math.round(Math.min(100, Math.max(0, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100)))}%</span>
                                             </div>
@@ -1947,6 +1975,7 @@ export default function BulkMessagePage() {
                                     type="file"
                                     ref={fileInputRef}
                                     onChange={handleFileChange}
+                                    accept="image/jpeg,image/jpg,image/png,image/gif,image/webp"
                                     className="hidden"
                                 />
                                 <button
