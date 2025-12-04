@@ -617,7 +617,27 @@ export default function BulkMessagePage() {
                                     case "status":
                                         setFetchingProgress(prev => ({
                                             ...prev,
-                                            message: data.message
+                                            totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length),
+                                            // Update page number if provided to keep progress bar accurate
+                                            ...(data.currentPage !== undefined && {
+                                                currentPageNumber: Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                            }),
+                                            ...(data.totalPages !== undefined && { totalPages: data.totalPages }),
+                                            message: data.message || prev.message
+                                        }));
+                                        break;
+                                    
+                                    case "page_progress":
+                                        // Update progress bar during page processing without changing page name
+                                        setFetchingProgress(prev => ({
+                                            ...prev,
+                                            totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length),
+                                            // Update page number to keep progress bar accurate
+                                            currentPageNumber: data.currentPage !== undefined 
+                                                ? Math.max(data.currentPage, prev.currentPageNumber || 0)
+                                                : prev.currentPageNumber,
+                                            totalPages: data.totalPages || prev.totalPages,
+                                            message: data.message || prev.message
                                         }));
                                         break;
                                     
@@ -1986,23 +2006,39 @@ export default function BulkMessagePage() {
                             />
 
                             {/* Attachment Preview */}
-                            {attachedFile && (
-                                <div className="absolute bottom-4 left-4 right-4 flex items-center gap-2 rounded-lg bg-white/5 p-2 border border-white/10 animate-in fade-in slide-in-from-bottom-2">
-                                    <div className="flex h-8 w-8 items-center justify-center rounded-md bg-indigo-500/20 text-indigo-400">
-                                        <FileIcon />
+                            {attachedFile && (() => {
+                                const getFileIcon = () => {
+                                    if (attachedFile.type.startsWith("image/")) return <ImageIcon />;
+                                    if (attachedFile.type.startsWith("video/")) return <VideoIcon />;
+                                    if (attachedFile.type.startsWith("audio/")) return <AudioIcon />;
+                                    return <FileIcon />;
+                                };
+                                
+                                const getFileTypeLabel = () => {
+                                    if (attachedFile.type.startsWith("image/")) return "Image";
+                                    if (attachedFile.type.startsWith("video/")) return "Video";
+                                    if (attachedFile.type.startsWith("audio/")) return "Audio";
+                                    return "File";
+                                };
+                                
+                                return (
+                                    <div className="absolute bottom-4 left-4 right-4 flex items-center gap-2 rounded-lg bg-white/5 p-2 border border-white/10 animate-in fade-in slide-in-from-bottom-2">
+                                        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-indigo-500/20 text-indigo-400">
+                                            {getFileIcon()}
+                                        </div>
+                                        <div className="flex-1 min-w-0">
+                                            <p className="text-xs font-medium text-zinc-200 truncate">{attachedFile.name}</p>
+                                            <p className="text-[10px] text-zinc-500">{getFileTypeLabel()} • {(attachedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                                        </div>
+                                        <button
+                                            onClick={handleRemoveFile}
+                                            className="p-1.5 hover:bg-white/10 rounded-full text-zinc-500 hover:text-red-400 transition-colors"
+                                        >
+                                            <XIcon size={14} />
+                                        </button>
                                     </div>
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-xs font-medium text-zinc-200 truncate">{attachedFile.name}</p>
-                                        <p className="text-[10px] text-zinc-500">{(attachedFile.size / 1024 / 1024).toFixed(2)} MB</p>
-                                    </div>
-                                    <button
-                                        onClick={handleRemoveFile}
-                                        className="p-1.5 hover:bg-white/10 rounded-full text-zinc-500 hover:text-red-400 transition-colors"
-                                    >
-                                        <XIcon size={14} />
-                                    </button>
-                                </div>
-                            )}
+                                );
+                            })()}
                         </div>
 
                         <div className="relative flex items-center justify-between px-4 pb-3 pt-1">
