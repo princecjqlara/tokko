@@ -629,32 +629,55 @@ export async function GET(request: NextRequest) {
             
             console.log(`   🔄 [Stream Route] Starting conversation processing loop for ${page.name} (${allConversations.length} conversations)`);
             
+            const pageProcessingStartTime = Date.now(); // Track processing time per page
+            
             // Process conversations in batches for better progress tracking
             const BATCH_SIZE = 50;
             const BATCH_SAVE_SIZE = 100;
+            const PROGRESS_UPDATE_INTERVAL = 50; // Update every 50 conversations
             let processedCount = 0;
+            const processingStartTime = Date.now();
+            const MAX_PROCESSING_TIME = 4 * 60 * 1000; // 4 minutes max per page
+            
+            console.log(`   🚀 [Stream Route] Starting to process ${allConversations.length} conversations for ${page.name}`);
             
             for (let i = 0; i < allConversations.length; i++) {
+              // Check for timeout - don't let a single page take more than 4 minutes
+              const elapsedTime = Date.now() - processingStartTime;
+              if (elapsedTime > MAX_PROCESSING_TIME) {
+                console.warn(`⏱️ [Stream Route] Max processing time (4min) reached for ${page.name}, stopping at conversation ${i}/${allConversations.length}`);
+                send({
+                  type: "status",
+                  message: `⚠️ Processing timeout for ${page.name} - saved ${allContacts.length} contacts so far`,
+                  progress: Math.round((i / allConversations.length) * 100),
+                });
+                break; // Exit loop, but save what we have
+              }
+              
               const conversation = allConversations[i];
               processedCount++;
               
               // Check if paused periodically while processing conversations
               if (processedCount % BATCH_SIZE === 0) {
                 await waitWhilePaused();
-                console.log(`   💓 [Stream Route] Heartbeat: Processed ${processedCount}/${allConversations.length} conversations for ${page.name}`);
+                const elapsed = ((Date.now() - processingStartTime) / 1000).toFixed(1);
+                console.log(`   💓 [Stream Route] Heartbeat: Processed ${processedCount}/${allConversations.length} conversations for ${page.name} (${elapsed}s elapsed, ${allContacts.length} contacts found)`);
                 // Send progress update every batch
                 send({
                   type: "status",
-                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations...`,
+                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`,
                   progress: Math.round((processedCount / allConversations.length) * 100),
                 });
               }
               
               // Check if stream is completed (timeout or error)
               if (streamCompleted) {
-                console.warn(`⚠️ [Stream Route] Stream marked as completed, stopping conversation processing`);
+                console.warn(`⚠️ [Stream Route] Stream marked as completed, stopping conversation processing at ${processedCount}/${allConversations.length}`);
                 break;
               }
+              
+              // Add try-catch around each conversation to prevent one bad conversation from stopping everything
+              try {
               
               const participants = conversation.participants?.data || [];
               const messages = conversation.messages?.data || [];
@@ -766,6 +789,13 @@ export async function GET(request: NextRequest) {
                     totalContacts: totalContacts
                   });
                 }
+              } // End if (contact)
+              
+              } catch (conversationError: any) {
+                // Log error but continue processing - don't let one bad conversation stop everything
+                console.warn(`⚠️ [Stream Route] Error processing conversation ${i} for ${page.name}:`, conversationError?.message || conversationError);
+                // Continue to next conversation
+                continue;
               }
               
               // Batch save contacts to database every BATCH_SAVE_SIZE contacts or at the end
@@ -819,29 +849,29 @@ export async function GET(request: NextRequest) {
                 }
               }
               
-              // Update job status and send progress updates periodically
+              // Update job status and send progress updates more frequently (every PROGRESS_UPDATE_INTERVAL)
               const totalContacts = existingContactCount + allContacts.length;
-              if (processedCount % 100 === 0 || i === allConversations.length - 1) {
-                try {
-                  await updateJobStatus({
-                    status: "running",
-                    is_paused: false,
-                    current_page_name: page.name,
-                    current_page_number: processedPages,
-                    total_pages: pages.length,
-                    total_contacts: totalContacts,
-                    message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`
-                  });
-                } catch (statusError) {
+              if (processedCount % PROGRESS_UPDATE_INTERVAL === 0 || i === allConversations.length - 1) {
+                // Don't await status updates - fire and forget to avoid blocking
+                updateJobStatus({
+                  status: "running",
+                  is_paused: false,
+                  current_page_name: page.name,
+                  current_page_number: processedPages,
+                  total_pages: pages.length,
+                  total_contacts: totalContacts,
+                  message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts found...`
+                }).catch((statusError) => {
                   console.warn(`⚠️ Could not update job status:`, statusError);
-                }
+                });
                 
                 send({
                   type: "status",
                   message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${allContacts.length} contacts...`,
                   totalContacts: totalContacts,
                   currentPage: processedPages,
-                  totalPages: pages.length
+                  totalPages: pages.length,
+                  progress: Math.round((processedCount / allConversations.length) * 100)
                 });
               }
             }
@@ -894,10 +924,11 @@ export async function GET(request: NextRequest) {
               }
             }
 
+            const pageProcessingTime = ((Date.now() - pageProcessingStartTime) / 1000).toFixed(1);
             if (pageContacts > 0) {
-              console.log(`   ✅ Page ${page.name}: Added ${pageContacts} new contacts (${allConversations.length} conversations processed)`);
+              console.log(`   ✅ Page ${page.name}: Added ${pageContacts} new contacts (${processedCount}/${allConversations.length} conversations processed in ${pageProcessingTime}s)`);
             } else {
-              console.log(`   ⏭️ Page ${page.name}: No new contacts (${allConversations.length} conversations, all already processed)`);
+              console.log(`   ⏭️ Page ${page.name}: No new contacts (${processedCount}/${allConversations.length} conversations processed in ${pageProcessingTime}s)`);
             }
             
             const totalContacts = existingContactCount + allContacts.length;
