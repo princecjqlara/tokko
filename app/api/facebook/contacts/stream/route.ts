@@ -341,11 +341,12 @@ export async function GET(request: NextRequest) {
           totalContacts: existingContactCount
         });
 
-        for (const page of pages) {
+        for (let pageIndex = 0; pageIndex < pages.length; pageIndex++) {
+          const page = pages[pageIndex];
           // Check if paused before processing each page
           await waitWhilePaused();
           
-          processedPages++;
+          processedPages = pageIndex + 1; // Current page number (1-based)
           
           await updateJobStatus({
             status: "running",

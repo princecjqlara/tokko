@@ -1836,12 +1836,16 @@ export default function BulkMessagePage() {
                                             <div className="h-1.5 w-full rounded-full bg-zinc-800 overflow-hidden">
                                                 <div 
                                                     className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
-                                                    style={{ width: `${Math.min(100, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100)}%` }}
+                                                    style={{ 
+                                                        // Show progress based on current page being processed (more accurate)
+                                                        // If on page 8 of 52, show 8/52 = 15.4% (page 8 is in progress)
+                                                        width: `${Math.min(100, Math.max(0, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100))}%` 
+                                                    }}
                                                 />
                                             </div>
                                             <div className="flex justify-between text-xs text-zinc-500 mt-1">
                                                 <span>Page {fetchingProgress.currentPageNumber} of {fetchingProgress.totalPages}</span>
-                                                <span>{Math.round((fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100)}%</span>
+                                                <span>{Math.round(Math.min(100, Math.max(0, (fetchingProgress.currentPageNumber / fetchingProgress.totalPages) * 100)))}%</span>
                                             </div>
                                         </div>
                                     )}
