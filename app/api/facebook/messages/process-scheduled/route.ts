@@ -64,6 +64,31 @@ function normalizeContactIds(raw: any): { dbIds: number[]; contactIds: (string |
   };
 }
 
+function coerceContactIds(raw: any): (string | number)[] {
+  if (Array.isArray(raw)) return raw as (string | number)[];
+
+  // If stored as JSON string, try to parse
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed as (string | number)[];
+    } catch (e) {
+      console.warn("[Process Scheduled] contact_ids string could not be parsed", { raw });
+    }
+  }
+
+  // If stored as object map {0: id, 1: id}
+  if (raw && typeof raw === "object") {
+    try {
+      return Object.values(raw) as (string | number)[];
+    } catch {
+      return [];
+    }
+  }
+
+  return [];
+}
+
 async function fetchContactsForScheduledMessage(userId: string, contactIds: (string | number)[]) {
   if (!contactIds.length) {
     throw new Error("No contact ids were stored with this scheduled message");
@@ -263,7 +288,7 @@ async function processScheduledMessage(scheduledMessage: ScheduledMessageRecord)
   try {
     const contacts = await fetchContactsForScheduledMessage(
       scheduledMessage.user_id,
-      scheduledMessage.contact_ids as (string | number)[]
+      coerceContactIds(scheduledMessage.contact_ids)
     );
 
     // Group by page
