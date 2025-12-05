@@ -254,8 +254,6 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
 }
 
 async function processScheduledMessage(scheduledMessage: ScheduledMessageRecord) {
-  const contactIds = normalizeContactIds(scheduledMessage.contact_ids);
-
   // Move to processing state early to avoid duplicate work
   await supabaseServer
     .from("scheduled_messages")
@@ -263,7 +261,10 @@ async function processScheduledMessage(scheduledMessage: ScheduledMessageRecord)
     .eq("id", scheduledMessage.id);
 
   try {
-    const contacts = await fetchContactsForScheduledMessage(scheduledMessage.user_id, contactIds);
+    const contacts = await fetchContactsForScheduledMessage(
+      scheduledMessage.user_id,
+      scheduledMessage.contact_ids as (string | number)[]
+    );
 
     // Group by page
     const contactsByPage = new Map<string, ContactRecord[]>();
