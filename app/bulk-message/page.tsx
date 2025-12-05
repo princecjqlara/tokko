@@ -2530,6 +2530,7 @@ export default function BulkMessagePage() {
                                 onClick={handleSendBroadcast}
                                 disabled={!message.trim() || selectedContactIds.length === 0}
                                 className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                                title={!message.trim() ? "Enter a message to send" : selectedContactIds.length === 0 ? "Select at least one contact" : "Send message (works even while syncing contacts)"}
                             >
                                 <span>
                                     {activeSends > 0 
