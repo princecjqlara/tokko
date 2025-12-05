@@ -613,9 +613,10 @@ export async function GET(request: NextRequest) {
               lastPageUpdate = new Date(lastContact.updated_at);
               const minutesSinceUpdate = (Date.now() - lastPageUpdate.getTime()) / (1000 * 60);
               
-              // Only skip if page was updated very recently (within last 2 minutes) AND we're doing a full sync
-              // This allows incremental updates to still work via webhooks
-              // For full syncs, skip pages updated within last 2 minutes to avoid duplicate work
+              // Skip if page was updated recently to avoid duplicate work on reload
+              // For pages updated within last 10 minutes, skip entirely (likely from recent fetch)
+              // For pages updated within last 2 minutes, skip (definitely too recent)
+              // For pages updated more than 10 minutes ago, fetch only new conversations
               if (minutesSinceUpdate < 2) {
                 console.log(`⏭️ Skipping page ${page.name} - processed ${Math.round(minutesSinceUpdate * 10) / 10} minutes ago (too recent)`);
                 send({
@@ -628,6 +629,20 @@ export async function GET(request: NextRequest) {
                   progress: Math.round((currentPageNumber / pages.length) * 100)
                 });
                 // Don't increment processedPages since we skipped this page
+                continue;
+              } else if (minutesSinceUpdate < 10) {
+                // Page was recently updated (2-10 minutes ago), likely from a recent fetch
+                // Skip to prevent duplicate processing on reload
+                console.log(`⏭️ Skipping page ${page.name} - processed ${Math.round(minutesSinceUpdate * 10) / 10} minutes ago (recent fetch, skipping to prevent duplicates)`);
+                send({
+                  type: "page_start",
+                  pageName: page.name,
+                  pageId: page.id,
+                  currentPage: currentPageNumber,
+                  totalPages: pages.length,
+                  message: `Skipping ${page.name} (recently processed)`,
+                  progress: Math.round((currentPageNumber / pages.length) * 100)
+                });
                 continue;
               } else {
                 console.log(`🔄 Page ${page.name} was last updated ${Math.round(minutesSinceUpdate * 10) / 10} minutes ago - will fetch only new conversations`);
@@ -1219,7 +1234,23 @@ export async function GET(request: NextRequest) {
         clearTimers();
         
         // Update job to completed with total count including existing
-        const finalTotalContacts = existingContactCount + allContacts.length;
+        // Get the actual final count from database after all upserts
+        // This prevents count doubling when reloading and reprocessing contacts
+        let finalTotalContacts = existingContactCount + allContacts.length;
+        try {
+          const { count: finalCount } = await supabaseServer
+            .from("contacts")
+            .select("*", { count: "exact", head: true })
+            .eq("user_id", userId);
+          
+          if (finalCount !== null) {
+            finalTotalContacts = finalCount;
+            console.log(`[Stream Route] Final contact count from database: ${finalTotalContacts} (calculated: ${existingContactCount + allContacts.length})`);
+          }
+        } catch (finalCountError) {
+          console.error("[Stream Route] Error getting final count, using calculated value:", finalCountError);
+          // Use calculated value as fallback
+        }
         // Ensure count never decreases - use the last sent count as minimum
         const safeFinalTotalContacts = Math.max(finalTotalContacts, lastSentContactCount || 0);
         

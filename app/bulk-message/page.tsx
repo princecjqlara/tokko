@@ -952,20 +952,36 @@ export default function BulkMessagePage() {
             
             // Check for running job first (before checking hasFetchedRef)
             checkAndReconnect().then(shouldReconnect => {
-                const allowAutoFetch = shouldReconnect || !storedHasFetched || existingCount === 0;
+                // Only allow auto-fetch if:
+                // 1. There's an active job to reconnect to, OR
+                // 2. User has never fetched before (no localStorage flag), OR
+                // 3. No contacts exist in database AND no contacts loaded in UI
+                const hasContacts = existingCount > 0 || contacts.length > 0;
+                const allowAutoFetch = shouldReconnect || (!storedHasFetched && !hasContacts) || (existingCount === 0 && contacts.length === 0);
                 
                 if (shouldReconnect) {
                     console.log("[Frontend] Reconnecting to active job...");
-                } else if (!allowAutoFetch && hasFetchedRef.current) {
-                    console.log("[Frontend] Already fetched for this user and no active job, waiting for new messages before auto-fetching...");
+                } else if (!allowAutoFetch) {
+                    console.log("[Frontend] Contacts already exist, skipping auto-fetch on reload. Will only fetch new messages via webhook.", {
+                        existingCount,
+                        contactsInUI: contacts.length,
+                        storedHasFetched
+                    });
                     setFetchingProgress(prev => ({
                         ...prev,
                         isFetching: false,
                         totalContacts: Math.max(prev.totalContacts, existingCount, contacts.length),
-                        message: prev.message || "Contacts loaded. Auto-sync will start when new messages arrive."
+                        message: prev.message || `Loaded ${Math.max(existingCount, contacts.length)} contacts. Auto-sync will start when new messages arrive.`
                     }));
+                    // Mark as fetched to prevent re-fetching
+                    hasFetchedRef.current = true;
+                    if (userId && storageKey) {
+                        localStorage.setItem(storageKey, 'true');
+                    }
                 } else {
-                    console.log("[Frontend] Starting new contact fetch process...");
+                    console.log("[Frontend] Starting new contact fetch process...", {
+                        reason: shouldReconnect ? 'reconnecting' : (!storedHasFetched ? 'first time' : 'no contacts')
+                    });
                 }
                 
                 // Now proceed with fetching if needed
