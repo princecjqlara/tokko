@@ -605,12 +605,34 @@ export async function DELETE(request: NextRequest) {
 
     console.log(`Attempting to delete ${contactIds.length} contacts for user ${userId}`);
 
-    // First, get the page_ids of contacts that will be deleted to check for empty pages later
-    const { data: contactsToDelete, error: fetchError } = await supabaseServer
+    // First, try to get the page_ids of contacts that will be deleted
+    // The frontend may send either database 'id' or 'contact_id', so we need to handle both
+    let contactsToDelete: any[] = [];
+    let fetchError: any = null;
+    
+    // Try by contact_id first (most common case)
+    const { data: contactsByContactId, error: fetchErrorByContactId } = await supabaseServer
       .from("contacts")
-      .select("page_id")
+      .select("id, contact_id, page_id")
       .eq("user_id", userId)
       .in("contact_id", contactIds);
+    
+    if (!fetchErrorByContactId && contactsByContactId && contactsByContactId.length > 0) {
+      contactsToDelete = contactsByContactId;
+    } else {
+      // If no contacts found by contact_id, try by database id
+      const { data: contactsById, error: fetchErrorById } = await supabaseServer
+        .from("contacts")
+        .select("id, contact_id, page_id")
+        .eq("user_id", userId)
+        .in("id", contactIds);
+      
+      if (fetchErrorById) {
+        fetchError = fetchErrorById;
+      } else if (contactsById) {
+        contactsToDelete = contactsById;
+      }
+    }
 
     if (fetchError) {
       console.error("Error fetching contacts to delete:", fetchError);
@@ -620,22 +642,31 @@ export async function DELETE(request: NextRequest) {
       );
     }
 
+    if (contactsToDelete.length === 0) {
+      return NextResponse.json(
+        { error: "No contacts found to delete", details: "The provided contact IDs do not match any contacts" },
+        { status: 404 }
+      );
+    }
+
     // Get unique page_ids that will be affected
-    const affectedPageIds = Array.from(new Set((contactsToDelete || []).map((c: any) => c.page_id)));
+    const affectedPageIds = Array.from(new Set(contactsToDelete.map((c: any) => c.page_id)));
 
     // Delete contacts in batches (PostgreSQL has limits on IN clause size)
+    // Use the actual database IDs for deletion
+    const contactDbIds = contactsToDelete.map((c: any) => c.id);
     const batchSize = 1000;
     let totalDeleted = 0;
     let errors: any[] = [];
 
-    for (let i = 0; i < contactIds.length; i += batchSize) {
-      const batch = contactIds.slice(i, i + batchSize);
+    for (let i = 0; i < contactDbIds.length; i += batchSize) {
+      const batch = contactDbIds.slice(i, i + batchSize);
       
       const { data, error: deleteError } = await supabaseServer
         .from("contacts")
         .delete()
         .eq("user_id", userId)
-        .in("contact_id", batch)
+        .in("id", batch)
         .select();
 
       if (deleteError) {

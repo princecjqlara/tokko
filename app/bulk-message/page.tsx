@@ -1665,6 +1665,20 @@ export default function BulkMessagePage() {
                 }
             }
 
+            // Convert scheduleDate to Philippine time (UTC+8) if provided
+            let scheduleDateISO = null;
+            if (scheduleDate) {
+                // datetime-local gives us a string like "2024-01-01T14:00" in local time
+                // We need to interpret this as Philippine time (UTC+8) and convert to ISO string
+                const localDate = new Date(scheduleDate);
+                // Get the timezone offset for Philippine time (UTC+8)
+                // Create a date in Philippine time by adjusting for UTC+8
+                const philippineOffset = 8 * 60; // 8 hours in minutes
+                const utcTime = localDate.getTime() - (localDate.getTimezoneOffset() * 60000);
+                const philippineTime = new Date(utcTime + (philippineOffset * 60000));
+                scheduleDateISO = philippineTime.toISOString();
+            }
+
             const response = await fetch("/api/facebook/messages/send", {
                 method: "POST",
                 headers: {
@@ -1673,7 +1687,7 @@ export default function BulkMessagePage() {
                 body: JSON.stringify({
                     contactIds: selectedContactIds,
                     message: message.trim(),
-                    scheduleDate: scheduleDate || null,
+                    scheduleDate: scheduleDateISO,
                     attachment: attachment
                 }),
             });
@@ -1967,6 +1981,7 @@ export default function BulkMessagePage() {
                             onClick={() => setShowPageDropdown(!showPageDropdown)}
                             disabled={isLoading || pages.length === 1}
                             className="w-full flex items-center justify-between rounded-xl bg-zinc-900/50 border border-white/10 py-3 px-4 text-sm text-zinc-100 outline-none transition-all focus:bg-zinc-900 focus:border-indigo-500/50 focus:ring-2 focus:ring-indigo-500/20 backdrop-blur-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                            title={pages.length === 1 ? "No pages available" : "Filter by page"}
                         >
                             <span>{selectedPage}</span>
                             <svg className={`w-4 h-4 text-zinc-400 transition-transform ${showPageDropdown ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
