@@ -967,6 +967,11 @@ export default function BulkMessagePage() {
                         }
                     };
 
+                    // If we're reconnecting to an active job, start the stream immediately without waiting for pages
+                    if (shouldReconnect) {
+                        maybeStartStream();
+                    }
+
                     // Fetch pages first, but always attempt to reconnect to the stream even if this fails
                     fetch("/api/facebook/pages").then(pagesResponse => {
                         let fetchedPages: any[] = [];
@@ -995,6 +1000,9 @@ export default function BulkMessagePage() {
                         setIsLoading(false);
                         isFetchingRef.current = false;
                         // Ensure we still try to reconnect to stream even if pages fetch fails
+                        maybeStartStream();
+                    }).finally(() => {
+                        // As an extra safety net, make sure we try to connect after the pages request completes
                         maybeStartStream();
                     });
                 }
