@@ -108,7 +108,7 @@ export async function POST(request: NextRequest) {
 
         while (currentUrl && paginationCount < MAX_PAGES) {
           paginationCount++;
-          const response = await fetch(currentUrl);
+          const response: Response = await fetch(currentUrl);
           
           if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
