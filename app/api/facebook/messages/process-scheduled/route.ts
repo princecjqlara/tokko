@@ -442,17 +442,36 @@ export async function GET(request: NextRequest) {
     });
 
     const now = new Date().toISOString();
+    const nowDate = new Date();
     // Also consider messages that have been "processing" for more than 30 minutes as stuck
     const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
+    console.log("[Process Scheduled] Checking for scheduled messages:", {
+      nowUTC: now,
+      nowPhilippine: nowDate.toLocaleString('en-US', { timeZone: 'Asia/Manila' }),
+      timestamp: Date.now()
+    });
+
     // Find all pending scheduled messages that are due
+    // Use NOW() for comparison to ensure timezone-aware comparison with TIMESTAMPTZ
+    // Also include messages scheduled up to 1 minute in the future to account for clock drift
+    const oneMinuteFromNow = new Date(Date.now() + 60 * 1000).toISOString();
     const { data: pendingMessages, error: pendingError } = await supabaseServer
       .from("scheduled_messages")
       .select("*")
       .eq("status", "pending")
-      .lte("scheduled_for", now)
+      .lte("scheduled_for", oneMinuteFromNow) // Allow 1 minute buffer for processing
       .order("scheduled_for", { ascending: true })
       .limit(MAX_MESSAGES_PER_RUN);
+    
+    if (pendingMessages && pendingMessages.length > 0) {
+      console.log("[Process Scheduled] Found pending messages:", pendingMessages.map((m: any) => ({
+        id: m.id,
+        scheduled_for: m.scheduled_for,
+        scheduled_for_ph: new Date(m.scheduled_for).toLocaleString('en-US', { timeZone: 'Asia/Manila' }),
+        isDue: m.scheduled_for <= now
+      })));
+    }
 
     // Also find messages stuck in "processing" status (likely from a failed cron run)
     const { data: stuckMessages, error: stuckError } = await supabaseServer

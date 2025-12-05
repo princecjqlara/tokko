@@ -1668,15 +1668,21 @@ export default function BulkMessagePage() {
             // Convert scheduleDate to Philippine time (UTC+8) if provided
             let scheduleDateISO = null;
             if (scheduleDate) {
-                // datetime-local gives us a string like "2024-01-01T14:00" in local time
-                // We need to interpret this as Philippine time (UTC+8) and convert to ISO string
-                const localDate = new Date(scheduleDate);
-                // Get the timezone offset for Philippine time (UTC+8)
-                // Create a date in Philippine time by adjusting for UTC+8
-                const philippineOffset = 8 * 60; // 8 hours in minutes
-                const utcTime = localDate.getTime() - (localDate.getTimezoneOffset() * 60000);
-                const philippineTime = new Date(utcTime + (philippineOffset * 60000));
-                scheduleDateISO = philippineTime.toISOString();
+                // datetime-local gives us a string like "2024-01-01T14:00" without timezone
+                // We need to interpret this as Philippine time (UTC+8) and convert to UTC
+                // Parse the date string manually to avoid browser timezone interpretation
+                const [datePart, timePart] = scheduleDate.split('T');
+                const [year, month, day] = datePart.split('-').map(Number);
+                const [hours, minutes] = (timePart || '00:00').split(':').map(Number);
+                
+                // Create a date object treating the input as Philippine time (UTC+8)
+                // Philippine time is UTC+8, so we subtract 8 hours to get UTC
+                const philippineDate = new Date(Date.UTC(year, month - 1, day, hours, minutes, 0, 0));
+                // Subtract 8 hours to convert from Philippine time (UTC+8) to UTC
+                const utcDate = new Date(philippineDate.getTime() - (8 * 60 * 60 * 1000));
+                scheduleDateISO = utcDate.toISOString();
+                
+                console.log('[Schedule] Input:', scheduleDate, '→ Philippine time:', philippineDate.toISOString(), '→ UTC:', scheduleDateISO);
             }
 
             const response = await fetch("/api/facebook/messages/send", {
