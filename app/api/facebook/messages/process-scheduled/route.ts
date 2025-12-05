@@ -37,20 +37,31 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
-function normalizeContactIds(raw: any): (string | number)[] {
-  if (!Array.isArray(raw)) return [];
+function normalizeContactIds(raw: any): { dbIds: number[]; contactIds: (string | number)[] } {
+  if (!Array.isArray(raw)) return { dbIds: [], contactIds: [] };
 
-  const ids = raw
-    .map((value) => {
-      if (value && typeof value === "object") {
-        if ("id" in value) return (value as any).id;
-        if ("contact_id" in value) return (value as any).contact_id;
-      }
-      return value;
-    })
-    .filter((id) => id !== null && id !== undefined && id !== "");
+  const dbIds: number[] = [];
+  const contactIds: (string | number)[] = [];
 
-  return Array.from(new Set(ids));
+  for (const value of raw) {
+    const candidate =
+      value && typeof value === "object"
+        ? ("id" in value ? (value as any).id : "contact_id" in value ? (value as any).contact_id : value)
+        : value;
+
+    if (candidate === null || candidate === undefined || candidate === "") continue;
+
+    const asNumber = Number(candidate);
+    if (!Number.isNaN(asNumber) && Number.isFinite(asNumber)) {
+      dbIds.push(asNumber);
+    }
+    contactIds.push(candidate);
+  }
+
+  return {
+    dbIds: Array.from(new Set(dbIds)),
+    contactIds: Array.from(new Set(contactIds)),
+  };
 }
 
 async function fetchContactsForScheduledMessage(userId: string, contactIds: (string | number)[]) {
@@ -58,31 +69,37 @@ async function fetchContactsForScheduledMessage(userId: string, contactIds: (str
     throw new Error("No contact ids were stored with this scheduled message");
   }
 
+  const normalized = normalizeContactIds(contactIds);
   const contacts: ContactRecord[] = [];
-  const remainingByDbId = new Set(contactIds);
+  const remainingByDbId = new Set(normalized.dbIds);
+  const remainingByContactId = new Set(normalized.contactIds);
 
-  // First pass: try database ids
-  for (const chunk of chunkArray([...remainingByDbId], CONTACT_FETCH_CHUNK)) {
-    const { data, error } = await supabaseServer
-      .from("contacts")
-      .select("id, contact_id, page_id, contact_name, page_name")
-      .in("id", chunk)
-      .eq("user_id", userId);
+  // First pass: try database ids (numeric)
+  if (normalized.dbIds.length > 0) {
+    for (const chunk of chunkArray([...normalized.dbIds], CONTACT_FETCH_CHUNK)) {
+      const { data, error } = await supabaseServer
+        .from("contacts")
+        .select("id, contact_id, page_id, contact_name, page_name")
+        .in("id", chunk)
+        .eq("user_id", userId);
 
-    if (error) {
-      throw new Error(`Failed to fetch contacts by id: ${error.message}`);
-    }
+      if (error) {
+        throw new Error(`Failed to fetch contacts by id: ${error.message}`);
+      }
 
-    if (data?.length) {
-      contacts.push(...(data as ContactRecord[]));
-      data.forEach((row: any) => remainingByDbId.delete(row.id));
+      if (data?.length) {
+        contacts.push(...(data as ContactRecord[]));
+        data.forEach((row: any) => {
+          remainingByDbId.delete(row.id);
+          remainingByContactId.delete(row.contact_id);
+        });
+      }
     }
   }
 
   // Second pass: fallback to contact_id for anything missing
-  const remainingContactIds = Array.from(remainingByDbId);
-  if (remainingContactIds.length > 0) {
-    for (const chunk of chunkArray(remainingContactIds, CONTACT_FETCH_CHUNK)) {
+  if (remainingByContactId.size > 0) {
+    for (const chunk of chunkArray([...remainingByContactId], CONTACT_FETCH_CHUNK)) {
       const { data, error } = await supabaseServer
         .from("contacts")
         .select("id, contact_id, page_id, contact_name, page_name")
@@ -95,7 +112,10 @@ async function fetchContactsForScheduledMessage(userId: string, contactIds: (str
 
       if (data?.length) {
         contacts.push(...(data as ContactRecord[]));
-        data.forEach((row: any) => remainingByDbId.delete(row.contact_id));
+        data.forEach((row: any) => {
+          remainingByContactId.delete(row.contact_id);
+          remainingByDbId.delete(row.id);
+        });
       }
     }
   }
