@@ -33,6 +33,7 @@ export async function GET(request: NextRequest) {
     let pages: any[] = [];
     let heartbeatInterval: NodeJS.Timeout | null = null;
     let hardStopTimeout: NodeJS.Timeout | null = null;
+    let lastSentContactCount = 0; // Track last sent count to ensure it never decreases
     
     const stream = new ReadableStream({
       async start(controller) {
@@ -107,29 +108,71 @@ export async function GET(request: NextRequest) {
         };
 
         // Hard stop after STREAM_TIMEOUT as a final safety to avoid stuck streams
-        hardStopTimeout = setTimeout(() => {
+        hardStopTimeout = setTimeout(async () => {
           if (!streamCompleted) {
             console.warn("[Stream Route] Global stream timeout reached, closing stream to avoid getting stuck");
             streamCompleted = true;
             clearTimers();
             try {
+              // Get actual database count
+              let timeoutTotal = 0;
+              try {
+                const { count: timeoutCount } = await supabaseServer
+                  .from("contacts")
+                  .select("*", { count: "exact", head: true })
+                  .eq("user_id", userId);
+                
+                if (timeoutCount !== null) {
+                  timeoutTotal = timeoutCount;
+                } else {
+                  timeoutTotal = Math.max(lastSentContactCount || existingContactCount || 0, 0);
+                }
+              } catch (timeoutCountError) {
+                timeoutTotal = Math.max(lastSentContactCount || existingContactCount || 0, 0);
+              }
+              
               send({
                 type: "complete",
                 message: "Sync timed out. Some pages may be incomplete, please resync.",
-                totalContacts: existingContactCount + allContacts.length,
+                totalContacts: timeoutTotal,
                 newContactsCount: allContacts.length
               });
               controller.close();
             } catch (err) {
               console.error("Error closing stream after global timeout:", err);
+              try {
+                controller.close();
+              } catch (e) {
+                // Ignore second close error
+              }
             }
           }
         }, STREAM_TIMEOUT);
 
         // Heartbeat to keep the connection alive and surface progress even if upstream is quiet
-        heartbeatInterval = setInterval(() => {
+        heartbeatInterval = setInterval(async () => {
           if (streamCompleted) return;
-          const safeTotal = existingContactCount + allContacts.length;
+          
+          // Query database for actual count in heartbeat to prevent duplication
+          let safeTotal = existingContactCount + allContacts.length;
+          try {
+            const { count: heartbeatCount } = await supabaseServer
+              .from("contacts")
+              .select("*", { count: "exact", head: true })
+              .eq("user_id", userId);
+            
+            if (heartbeatCount !== null) {
+              // Update existingContactCount to reflect actual database state
+              existingContactCount = Math.max(0, heartbeatCount - allContacts.length);
+              safeTotal = Math.max(heartbeatCount, lastSentContactCount);
+              lastSentContactCount = safeTotal;
+            }
+          } catch (heartbeatCountError) {
+            // If query fails, use calculated value
+            safeTotal = Math.max(existingContactCount + allContacts.length, lastSentContactCount);
+            lastSentContactCount = safeTotal;
+          }
+          
           const totalPages = pages.length > 0 ? pages.length : undefined;
           send({
             type: "status",
@@ -216,36 +259,39 @@ export async function GET(request: NextRequest) {
               // This prevents masking the error but allows the process to continue
             }
             
+            // Prepare update object
+            const updateData: any = {
+              status: updates.status || "running",
+              is_paused: updates.is_paused || false,
+              current_page_name: updates.current_page_name,
+              current_page_number: updates.current_page_number,
+              total_pages: updates.total_pages,
+              total_contacts: updates.total_contacts,
+              message: updates.message,
+              updated_at: new Date().toISOString(),
+            };
+            
+            // Add completed_at if status is completed
+            if (updates.status === "completed" && updates.completed_at) {
+              updateData.completed_at = updates.completed_at;
+            }
+            
             if (existingJob) {
               // Update existing job
               await supabaseServer
                 .from("fetch_jobs")
-                .update({
-                  status: updates.status || "running",
-                  is_paused: updates.is_paused || false,
-                  current_page_name: updates.current_page_name,
-                  current_page_number: updates.current_page_number,
-                  total_pages: updates.total_pages,
-                  total_contacts: updates.total_contacts,
-                  message: updates.message,
-                  updated_at: new Date().toISOString(),
-                })
+                .update(updateData)
                 .eq("id", existingJob.id);
             } else {
               // Create new job
+              const insertData: any = {
+                user_id: userId,
+                ...updateData,
+                total_contacts: updates.total_contacts || 0,
+              };
               await supabaseServer
                 .from("fetch_jobs")
-                .insert({
-                  user_id: userId,
-                  status: updates.status || "running",
-                  is_paused: updates.is_paused || false,
-                  current_page_name: updates.current_page_name,
-                  current_page_number: updates.current_page_number,
-                  total_pages: updates.total_pages,
-                  total_contacts: updates.total_contacts || 0,
-                  message: updates.message,
-                  updated_at: new Date().toISOString(),
-                });
+                .insert(insertData);
             }
           } catch (err) {
             console.error("Error updating job status:", err);
@@ -254,6 +300,7 @@ export async function GET(request: NextRequest) {
         };
 
         // Get existing contact count from database to preserve it
+        // This is used only for initial display, final count will always come from database
         try {
           const { count, error: countError } = await supabaseServer
             .from("contacts")
@@ -267,6 +314,7 @@ export async function GET(request: NextRequest) {
         } catch (countErr) {
           console.error("[Stream Route] Error getting existing contact count:", countErr);
           // Continue with 0 if we can't get the count
+          existingContactCount = 0;
         }
 
         // Create initial job record with existing count
@@ -487,7 +535,8 @@ export async function GET(request: NextRequest) {
         // This prevents counting the same contact multiple times if they appear in multiple pages
         const globalSeenContactKeys = new Set<string>();
         let processedPages = 0; // Track number of pages actually processed (not skipped)
-        let lastSentContactCount = existingContactCount; // Track last sent count globally to ensure it never decreases
+        // Initialize lastSentContactCount with existing count (variable declared at outer scope)
+        lastSentContactCount = existingContactCount;
         
         // Send initial status update with existing count
         send({
@@ -533,15 +582,32 @@ export async function GET(request: NextRequest) {
               }
             }
             
-            // Update job status - use allContacts.length as it contains all unique contacts found
-            const finalTotal = allContacts.length;
+            // Get actual database count instead of calculated value
+            let timeoutFinalTotal = 0;
+            try {
+              const { count: timeoutCount } = await supabaseServer
+                .from("contacts")
+                .select("*", { count: "exact", head: true })
+                .eq("user_id", userId);
+              
+              if (timeoutCount !== null) {
+                timeoutFinalTotal = timeoutCount;
+              } else {
+                timeoutFinalTotal = Math.max(lastSentContactCount || existingContactCount || 0, 0);
+              }
+            } catch (timeoutCountError) {
+              console.error("[Stream Route] Error getting count on timeout:", timeoutCountError);
+              timeoutFinalTotal = Math.max(lastSentContactCount || existingContactCount || 0, 0);
+            }
+            
+            // Update job status - use actual database count
             try {
               await updateJobStatus({
                 status: "completed",
                 is_paused: false,
-                total_contacts: finalTotal,
+                total_contacts: timeoutFinalTotal,
                 total_pages: pages.length,
-                message: `Partially completed: Processed ${processedPages}/${pages.length} pages before timeout. Found ${finalTotal} total contacts.`,
+                message: `Partially completed: Processed ${processedPages}/${pages.length} pages before timeout. Found ${timeoutFinalTotal} total contacts.`,
                 completed_at: new Date().toISOString()
               });
             } catch (statusError) {
@@ -551,8 +617,8 @@ export async function GET(request: NextRequest) {
             // Send complete event
             send({
               type: "complete",
-              message: `Processed ${processedPages}/${pages.length} pages before timeout. Found ${finalTotal} total contacts. You can sync again to continue.`,
-              totalContacts: finalTotal,
+              message: `Processed ${processedPages}/${pages.length} pages before timeout. Found ${timeoutFinalTotal} total contacts. You can sync again to continue.`,
+              totalContacts: timeoutFinalTotal,
               newContactsCount: allContacts.length
             });
             
@@ -1016,11 +1082,12 @@ export async function GET(request: NextRequest) {
                   
                   // Only send contact event and update count for NEW unique contacts (not duplicates across pages)
                   if (!isDuplicateAcrossPages) {
-                    // Send contact immediately for UI updates
-                    const totalContacts = existingContactCount + allContacts.length;
+                    // Calculate total - use allContacts.length as new contacts in this sync
+                    // But we'll query database periodically for accurate count
+                    const calculatedTotal = existingContactCount + allContacts.length;
                     
                     // Ensure count never decreases
-                    const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
+                    const safeTotalContacts = Math.max(calculatedTotal, lastSentContactCount);
                     lastSentContactCount = safeTotalContacts;
                     
                     send({
@@ -1029,9 +1096,45 @@ export async function GET(request: NextRequest) {
                       totalContacts: safeTotalContacts
                     });
                     
-                    // Send progress update every contact for real-time feel (but throttle to every 5 contacts to avoid spam)
-                    // Always show cumulative total across all pages, not per-page count
-                    if (allContacts.length % 5 === 0) {
+                    // Query database for actual count every 50 contacts to prevent duplication
+                    // This ensures we use the real database count instead of calculated value
+                    if (allContacts.length % 50 === 0) {
+                      try {
+                        const { count: actualCount } = await supabaseServer
+                          .from("contacts")
+                          .select("*", { count: "exact", head: true })
+                          .eq("user_id", userId);
+                        
+                        if (actualCount !== null) {
+                          // Update existingContactCount to reflect actual database state
+                          // This prevents double counting on reload
+                          existingContactCount = actualCount - allContacts.length;
+                          const actualTotal = Math.max(actualCount, lastSentContactCount);
+                          lastSentContactCount = actualTotal;
+                          
+                          send({
+                            type: "status",
+                            message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${actualTotal} total contacts (${allContacts.length} new in this sync)...`,
+                            totalContacts: actualTotal,
+                            currentPage: currentPageNumber,
+                            totalPages: pages.length,
+                            progress: Math.round((processedCount / allConversations.length) * 100)
+                          });
+                        }
+                      } catch (countError) {
+                        // If query fails, continue with calculated value
+                        console.warn("[Stream Route] Error querying database count:", countError);
+                        send({
+                          type: "status",
+                          message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
+                          totalContacts: safeTotalContacts,
+                          currentPage: currentPageNumber,
+                          totalPages: pages.length,
+                          progress: Math.round((processedCount / allConversations.length) * 100)
+                        });
+                      }
+                    } else if (allContacts.length % 5 === 0) {
+                      // Send progress update every 5 contacts (but not querying DB)
                       send({
                         type: "status",
                         message: `Processing ${page.name}: ${processedCount}/${allConversations.length} conversations, ${safeTotalContacts} total contacts (${allContacts.length} new in this sync)...`,
@@ -1108,12 +1211,35 @@ export async function GET(request: NextRequest) {
               }
               
               // Update job status and send progress updates more frequently (every PROGRESS_UPDATE_INTERVAL)
-              const totalContacts = existingContactCount + allContacts.length;
-              // Ensure count never decreases - always use cumulative total across all pages
-              const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
-              lastSentContactCount = safeTotalContacts;
-              
+              // Query database for actual count periodically to prevent duplication
               if (processedCount % PROGRESS_UPDATE_INTERVAL === 0 || i === allConversations.length - 1) {
+                let safeTotalContacts = existingContactCount + allContacts.length;
+                
+                // Query database for actual count every 100 contacts to ensure accuracy
+                if (allContacts.length % 100 === 0 || i === allConversations.length - 1) {
+                  try {
+                    const { count: actualCount } = await supabaseServer
+                      .from("contacts")
+                      .select("*", { count: "exact", head: true })
+                      .eq("user_id", userId);
+                    
+                    if (actualCount !== null) {
+                      // Update existingContactCount to reflect actual database state
+                      existingContactCount = Math.max(0, actualCount - allContacts.length);
+                      safeTotalContacts = Math.max(actualCount, lastSentContactCount);
+                      lastSentContactCount = safeTotalContacts;
+                    }
+                  } catch (countError) {
+                    // If query fails, use calculated value
+                    safeTotalContacts = Math.max(existingContactCount + allContacts.length, lastSentContactCount);
+                    lastSentContactCount = safeTotalContacts;
+                  }
+                } else {
+                  // Use calculated value for intermediate updates
+                  safeTotalContacts = Math.max(existingContactCount + allContacts.length, lastSentContactCount);
+                  lastSentContactCount = safeTotalContacts;
+                }
+                
                 // Don't await status updates - fire and forget to avoid blocking
                 updateJobStatus({
                   status: "running",
@@ -1199,20 +1325,35 @@ export async function GET(request: NextRequest) {
               console.log(`   ⏭️ [Stream Route] Page ${page.name}: No new contacts (${processedCount}/${allConversations.length} conversations processed in ${pageProcessingTime}s)`);
             }
             
-            const totalContacts = existingContactCount + allContacts.length;
-            // Ensure count never decreases
-            const safeTotalContacts = Math.max(totalContacts, lastSentContactCount);
-            lastSentContactCount = safeTotalContacts;
+            // Query database for actual count at page completion to prevent duplication
+            let pageCompleteTotal = existingContactCount + allContacts.length;
+            try {
+              const { count: pageActualCount } = await supabaseServer
+                .from("contacts")
+                .select("*", { count: "exact", head: true })
+                .eq("user_id", userId);
+              
+              if (pageActualCount !== null) {
+                // Update existingContactCount to reflect actual database state
+                existingContactCount = Math.max(0, pageActualCount - allContacts.length);
+                pageCompleteTotal = Math.max(pageActualCount, lastSentContactCount);
+                lastSentContactCount = pageCompleteTotal;
+              }
+            } catch (pageCountError) {
+              // If query fails, use calculated value
+              pageCompleteTotal = Math.max(existingContactCount + allContacts.length, lastSentContactCount);
+              lastSentContactCount = pageCompleteTotal;
+            }
             
-            console.log(`   📊 [Stream Route] Sending page_complete event for ${page.name} (${pageContacts} contacts, ${safeTotalContacts} total)`);
+            console.log(`   📊 [Stream Route] Sending page_complete event for ${page.name} (${pageContacts} contacts, ${pageCompleteTotal} total)`);
             send({
               type: "page_complete",
               pageName: page.name,
               contactsCount: pageContacts,
-              totalContacts: safeTotalContacts,
+              totalContacts: pageCompleteTotal,
               currentPage: currentPageNumber,
               totalPages: pages.length,
-              message: `✓ Completed ${page.name}: ${pageContacts} new contacts (${safeTotalContacts} total)`
+              message: `✓ Completed ${page.name}: ${pageContacts} new contacts (${pageCompleteTotal} total)`
             });
             console.log(`   ✅ [Stream Route] Page ${page.name} processing complete, moving to next page...`);
           } catch (pageError: any) {
@@ -1233,34 +1374,46 @@ export async function GET(request: NextRequest) {
         // Clear timers since we're completing normally
         clearTimers();
         
-        // Update job to completed with total count including existing
+        // Wait a moment for any pending database operations to complete
+        await new Promise(resolve => setTimeout(resolve, 1000));
+        
         // Get the actual final count from database after all upserts
         // This prevents count doubling when reloading and reprocessing contacts
-        let finalTotalContacts = existingContactCount + allContacts.length;
+        // ALWAYS use database count, never calculate from existingContactCount + allContacts.length
+        let finalTotalContacts = 0;
         try {
-          const { count: finalCount } = await supabaseServer
+          const { count: finalCount, error: finalCountError } = await supabaseServer
             .from("contacts")
             .select("*", { count: "exact", head: true })
             .eq("user_id", userId);
           
-          if (finalCount !== null) {
+          if (!finalCountError && finalCount !== null) {
             finalTotalContacts = finalCount;
-            console.log(`[Stream Route] Final contact count from database: ${finalTotalContacts} (calculated: ${existingContactCount + allContacts.length})`);
+            console.log(`[Stream Route] Final contact count from database: ${finalTotalContacts}`);
+          } else {
+            console.error("[Stream Route] Error getting final count:", finalCountError);
+            // Fallback: use last sent count or existing count, but log warning
+            finalTotalContacts = Math.max(lastSentContactCount || existingContactCount || 0, 0);
+            console.warn(`[Stream Route] Using fallback count: ${finalTotalContacts}`);
           }
         } catch (finalCountError) {
-          console.error("[Stream Route] Error getting final count, using calculated value:", finalCountError);
-          // Use calculated value as fallback
+          console.error("[Stream Route] Exception getting final count:", finalCountError);
+          // Fallback: use last sent count or existing count
+          finalTotalContacts = Math.max(lastSentContactCount || existingContactCount || 0, 0);
+          console.warn(`[Stream Route] Using fallback count after exception: ${finalTotalContacts}`);
         }
+        
         // Ensure count never decreases - use the last sent count as minimum
         const safeFinalTotalContacts = Math.max(finalTotalContacts, lastSentContactCount || 0);
         
+        // Update job status to completed
         try {
           await updateJobStatus({
             status: "completed",
             is_paused: false,
             total_contacts: safeFinalTotalContacts,
             total_pages: pages.length,
-            message: `Finished! Found ${safeFinalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
+            message: `Finished! Found ${safeFinalTotalContacts} total contacts (${allContacts.length} new contacts processed) from ${pages.length} pages.`,
             completed_at: new Date().toISOString()
           });
           console.log(`✅ [Stream Route] Job status updated to completed`);
@@ -1268,12 +1421,13 @@ export async function GET(request: NextRequest) {
           console.error("❌ [Stream Route] Error updating job status to completed:", statusError);
         }
 
+        // Send completion event
         try {
           send({
             type: "complete",
             totalContacts: safeFinalTotalContacts,
             totalPages: pages.length,
-            message: `Finished! Found ${safeFinalTotalContacts} total contacts (${allContacts.length} new) from ${pages.length} pages.`,
+            message: `Finished! Found ${safeFinalTotalContacts} total contacts (${allContacts.length} new contacts processed) from ${pages.length} pages.`,
             newContactsCount: allContacts.length
           });
           console.log(`✅ [Stream Route] Completion event sent`);
@@ -1281,18 +1435,26 @@ export async function GET(request: NextRequest) {
           console.error("❌ [Stream Route] Error sending completion event:", sendError);
         }
         
-        console.log(`✅ [Stream Route] Completed fetch: ${allContacts.length} new contacts, ${safeFinalTotalContacts} total contacts from ${pages.length} pages`);
+        console.log(`✅ [Stream Route] Completed fetch: ${allContacts.length} new contacts processed, ${safeFinalTotalContacts} total contacts from ${pages.length} pages`);
         
-        // Mark as completed
+        // Mark as completed BEFORE closing to prevent timeout handlers
         streamCompleted = true;
 
-        // Always close the controller at the end
+        // Always close the controller at the end - ensure stream ends
         console.log(`✅ [Stream Route] Stream processing complete. Closing stream...`);
         try {
+          // Send a final newline to ensure client receives the complete event
+          controller.enqueue(encoder.encode("\n\n"));
           controller.close();
           console.log(`✅ [Stream Route] Stream closed successfully`);
         } catch (closeError) {
           console.error("❌ [Stream Route] Error closing controller:", closeError);
+          // Try to close anyway even if there's an error
+          try {
+            controller.close();
+          } catch (e) {
+            // Ignore second close error
+          }
         }
         } catch (error: any) {
           // Clear timers on error
