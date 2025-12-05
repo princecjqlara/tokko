@@ -199,32 +199,32 @@ export async function POST(request: NextRequest) {
       let pageData: any = null;
       let pageError: any = null;
       
-        try {
-          // Add timeout to database query (5 seconds)
-          const pageQueryPromise = supabaseServer
-            .from("facebook_pages")
-            .select("page_id, page_access_token")
-            .eq("page_id", pageId)
-            .maybeSingle();
-          
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Database query timeout")), 5000)
-          );
-          
-          const pageQuery = await Promise.race([pageQueryPromise, timeoutPromise]) as any;
+      try {
+        // Add timeout to database query (5 seconds)
+        const pageQueryPromise = supabaseServer
+          .from("facebook_pages")
+          .select("page_id, page_access_token")
+          .eq("page_id", pageId)
+          .maybeSingle();
         
-          pageData = pageQuery.data;
-          pageError = pageQuery.error;
-        } catch (dbError: any) {
-          console.error(`[Send Message API] Database error fetching page ${pageId}:`, dbError);
-          pageError = dbError;
-          
-          // If it's a timeout, allow fallback to Facebook API
-          if (dbError.message?.includes("timeout")) {
-            console.log(`[Send Message API] Database timeout for page ${pageId}, will fetch from Facebook API`);
-            pageError = null; // Clear error to allow fallback
-          }
+        const timeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Database query timeout")), 5000)
+        );
+        
+        const pageQuery = await Promise.race([pageQueryPromise, timeoutPromise]) as any;
+      
+        pageData = pageQuery.data;
+        pageError = pageQuery.error;
+      } catch (dbError: any) {
+        console.error(`[Send Message API] Database error fetching page ${pageId}:`, dbError);
+        pageError = dbError;
+        
+        // If it's a timeout, allow fallback to Facebook API
+        if (dbError.message?.includes("timeout")) {
+          console.log(`[Send Message API] Database timeout for page ${pageId}, will fetch from Facebook API`);
+          pageError = null; // Clear error to allow fallback
         }
+      }
       
       // If page not found, try to fetch it from Facebook API
       if (pageError || !pageData) {
