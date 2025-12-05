@@ -14,55 +14,67 @@ export async function GET(request: NextRequest) {
 
     const userId = (session.user as any).id;
 
-    // Get the most recent fetch job (prioritize pending/running jobs)
-    const { data: activeJob, error: activeError } = await supabaseServer
-      .from("fetch_jobs")
-      .select("*")
-      .eq("user_id", userId)
-      .in("status", ["pending", "running", "paused"])
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    // If no active job, get the most recent job (including completed/failed)
-    let job = activeJob;
-    if (!job) {
-      const { data: recentJob, error: recentError } = await supabaseServer
+    try {
+      // Get the most recent fetch job (prioritize pending/running jobs)
+      const { data: activeJob, error: activeError } = await supabaseServer
         .from("fetch_jobs")
         .select("*")
         .eq("user_id", userId)
+        .in("status", ["pending", "running", "paused"])
         .order("updated_at", { ascending: false })
         .limit(1)
         .maybeSingle();
-      
-      if (recentError) {
-        console.error("Error fetching recent job:", recentError);
-      } else {
-        job = recentJob;
+
+      // If no active job, get the most recent job (including completed/failed)
+      let job = activeJob;
+      if (!job) {
+        const { data: recentJob, error: recentError } = await supabaseServer
+          .from("fetch_jobs")
+          .select("*")
+          .eq("user_id", userId)
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (recentError && recentError.code !== "PGRST116") {
+          console.error("Error fetching recent job:", recentError);
+          throw recentError;
+        } else {
+          job = recentJob;
+        }
       }
-    }
 
-    if (activeError && !job) {
-      console.error("Error fetching active job:", activeError);
-      return NextResponse.json({ error: "Failed to fetch job status" }, { status: 500 });
-    }
+      if (activeError && activeError.code !== "PGRST116" && !job) {
+        console.error("Error fetching active job:", activeError);
+        throw activeError;
+      }
 
-    const jobStatus = (job as any)?.status || "none";
-    
-    // Log for debugging if there's a pending job
-    if (jobStatus === "pending") {
-      console.log(`[Background API] Found pending job for user ${userId}:`, {
-        jobId: (job as any)?.id,
-        message: (job as any)?.message,
-        pageName: (job as any)?.current_page_name
+      const jobStatus = (job as any)?.status || "none";
+      
+      // Log for debugging if there's a pending job
+      if (jobStatus === "pending") {
+        console.log(`[Background API] Found pending job for user ${userId}:`, {
+          jobId: (job as any)?.id,
+          message: (job as any)?.message,
+          pageName: (job as any)?.current_page_name
+        });
+      }
+
+      return NextResponse.json({
+        job: job || null,
+        status: jobStatus,
+        hasPendingJob: jobStatus === "pending",
       });
+    } catch (dbError: any) {
+      console.error("Database error in background fetch GET:", dbError);
+      // Return a safe response even if database query fails
+      return NextResponse.json({
+        job: null,
+        status: "none",
+        hasPendingJob: false,
+        error: "Database query failed"
+      }, { status: 200 }); // Return 200 to prevent frontend from breaking
     }
-
-    return NextResponse.json({
-      job: job || null,
-      status: jobStatus,
-      hasPendingJob: jobStatus === "pending",
-    });
   } catch (error: any) {
     console.error("Error in background fetch GET:", error);
     return NextResponse.json(

@@ -45,23 +45,12 @@ export async function POST(request: NextRequest) {
     // But we also need page_id to uniquely identify contacts
     // Since contactIds might be contact_id values, we need to handle both cases
     
-    // First, try to fetch by database id (in case frontend is using database IDs)
-    let { data: contacts, error: contactsError } = await supabaseServer
-      .from("contacts")
-      .select(`
-        id,
-        contact_id,
-        page_id,
-        contact_name,
-        page_name
-      `)
-      .in("id", contactIds)
-      .eq("user_id", userId);
-
-    // If no contacts found by database id, try by contact_id
-    if ((!contacts || contacts.length === 0) && contactIds.length > 0) {
-      console.log("[Send Message API] No contacts found by database id, trying by contact_id");
-      const result = await supabaseServer
+    let contacts: any[] | null = null;
+    let contactsError: any = null;
+    
+    try {
+      // First, try to fetch by database id (in case frontend is using database IDs)
+      const firstQuery = await supabaseServer
         .from("contacts")
         .select(`
           id,
@@ -70,11 +59,33 @@ export async function POST(request: NextRequest) {
           contact_name,
           page_name
         `)
-        .in("contact_id", contactIds)
+        .in("id", contactIds)
         .eq("user_id", userId);
-      
-      contacts = result.data;
-      contactsError = result.error;
+
+      contacts = firstQuery.data;
+      contactsError = firstQuery.error;
+
+      // If no contacts found by database id, try by contact_id
+      if ((!contacts || contacts.length === 0) && contactIds.length > 0) {
+        console.log("[Send Message API] No contacts found by database id, trying by contact_id");
+        const result = await supabaseServer
+          .from("contacts")
+          .select(`
+            id,
+            contact_id,
+            page_id,
+            contact_name,
+            page_name
+          `)
+          .in("contact_id", contactIds)
+          .eq("user_id", userId);
+        
+        contacts = result.data;
+        contactsError = result.error;
+      }
+    } catch (dbError: any) {
+      console.error("[Send Message API] Database error fetching contacts:", dbError);
+      contactsError = dbError;
     }
 
     console.log("[Send Message API] Query result:", {
@@ -85,8 +96,13 @@ export async function POST(request: NextRequest) {
 
     if (contactsError) {
       console.error("Error fetching contacts:", contactsError);
+      // Check if it's an HTML error (Cloudflare timeout/error)
+      const errorMessage = typeof contactsError === 'string' && contactsError.includes('<html>')
+        ? "Database connection timeout. Please try again."
+        : contactsError.message || "Failed to fetch contacts";
+      
       return NextResponse.json(
-        { error: "Failed to fetch contacts", details: contactsError.message },
+        { error: "Failed to fetch contacts", details: errorMessage },
         { status: 500 }
       );
     }
@@ -102,6 +118,16 @@ export async function POST(request: NextRequest) {
     if (scheduleDate) {
       const scheduledDate = new Date(scheduleDate);
       const now = new Date();
+      
+      console.log("[Send Message API] Scheduling message:", {
+        scheduleDateInput: scheduleDate,
+        scheduledDateISO: scheduledDate.toISOString(),
+        scheduledDateLocal: scheduledDate.toLocaleString('en-US', { timeZone: 'Asia/Manila' }),
+        nowISO: now.toISOString(),
+        nowLocal: now.toLocaleString('en-US', { timeZone: 'Asia/Manila' }),
+        isFuture: scheduledDate > now,
+        timeUntil: scheduledDate.getTime() - now.getTime()
+      });
       
       if (scheduledDate <= now) {
         return NextResponse.json(
@@ -170,11 +196,35 @@ export async function POST(request: NextRequest) {
       const firstContact = pageContacts[0];
       
       // Fetch page access token separately
-      let { data: pageData, error: pageError } = await supabaseServer
-        .from("facebook_pages")
-        .select("page_id, page_access_token")
-        .eq("page_id", pageId)
-        .single();
+      let pageData: any = null;
+      let pageError: any = null;
+      
+        try {
+          // Add timeout to database query (5 seconds)
+          const pageQueryPromise = supabaseServer
+            .from("facebook_pages")
+            .select("page_id, page_access_token")
+            .eq("page_id", pageId)
+            .maybeSingle();
+          
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Database query timeout")), 5000)
+          );
+          
+          const pageQuery = await Promise.race([pageQueryPromise, timeoutPromise]) as any;
+        
+          pageData = pageQuery.data;
+          pageError = pageQuery.error;
+        } catch (dbError: any) {
+          console.error(`[Send Message API] Database error fetching page ${pageId}:`, dbError);
+          pageError = dbError;
+          
+          // If it's a timeout, allow fallback to Facebook API
+          if (dbError.message?.includes("timeout")) {
+            console.log(`[Send Message API] Database timeout for page ${pageId}, will fetch from Facebook API`);
+            pageError = null; // Clear error to allow fallback
+          }
+        }
       
       // If page not found, try to fetch it from Facebook API
       if (pageError || !pageData) {
@@ -208,15 +258,20 @@ export async function POST(request: NextRequest) {
               
               if (!storeError) {
                 // Retry fetching from database
-                const retryResult = await supabaseServer
-                  .from("facebook_pages")
-                  .select("page_id, page_access_token")
-                  .eq("page_id", pageId)
-                  .single();
-                
-                pageData = retryResult.data;
-                pageError = retryResult.error;
-                console.log(`✅ Successfully fetched and stored page ${pageId}`);
+                try {
+                  const retryResult = await supabaseServer
+                    .from("facebook_pages")
+                    .select("page_id, page_access_token")
+                    .eq("page_id", pageId)
+                    .maybeSingle();
+                  
+                  pageData = retryResult.data;
+                  pageError = retryResult.error;
+                  console.log(`✅ Successfully fetched and stored page ${pageId}`);
+                } catch (retryError: any) {
+                  console.error(`[Send Message API] Error retrying page fetch:`, retryError);
+                  pageError = retryError;
+                }
               }
             }
           }

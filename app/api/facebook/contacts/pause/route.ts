@@ -102,29 +102,37 @@ export async function GET(request: NextRequest) {
 
     const userId = (session.user as any).id;
 
-    // Get current job status
-    const { data, error } = await supabaseServer
-      .from("fetch_jobs")
-      .select("*")
-      .eq("user_id", userId)
-      .in("status", ["running", "paused", "pending"])
-      .order("updated_at", { ascending: false })
-      .limit(1)
-      .single();
+    try {
+      // Get current job status
+      const { data, error } = await supabaseServer
+        .from("fetch_jobs")
+        .select("*")
+        .eq("user_id", userId)
+        .in("status", ["running", "paused", "pending"])
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
 
-    if (error && error.code !== "PGRST116") { // PGRST116 = no rows returned
-      console.error("Error getting job status:", error);
-      return NextResponse.json(
-        { error: "Failed to get job status", details: error.message },
-        { status: 500 }
-      );
+      if (error && error.code !== "PGRST116") { // PGRST116 = no rows returned
+        console.error("Error getting job status:", error);
+        throw error;
+      }
+
+      return NextResponse.json({ 
+        job: data || null,
+        isPaused: data?.is_paused || false,
+        status: data?.status || "none"
+      });
+    } catch (dbError: any) {
+      console.error("Database error in pause GET endpoint:", dbError);
+      // Return a safe response even if database query fails
+      return NextResponse.json({ 
+        job: null,
+        isPaused: false,
+        status: "none",
+        error: "Database query failed"
+      }, { status: 200 }); // Return 200 to prevent frontend from breaking
     }
-
-    return NextResponse.json({ 
-      job: data || null,
-      isPaused: data?.is_paused || false,
-      status: data?.status || "none"
-    });
   } catch (error: any) {
     console.error("Error in pause GET endpoint:", error);
     return NextResponse.json(
