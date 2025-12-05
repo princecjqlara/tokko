@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
@@ -135,6 +135,8 @@ export default function BulkMessagePage() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [showProfileDropdown, setShowProfileDropdown] = useState(false);
     const profileDropdownRef = useRef<HTMLDivElement>(null);
+    const [scheduledNotice, setScheduledNotice] = useState<{ id: number; scheduledFor: string; total: number } | null>(null);
+    const [isCancellingSchedule, setIsCancellingSchedule] = useState(false);
     
     // Real-time fetching state
     const [fetchingProgress, setFetchingProgress] = useState<{
@@ -407,7 +409,7 @@ export default function BulkMessagePage() {
                         setFetchingProgress(prev => ({
                             ...prev,
                             isFetching: false,
-                            message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
+                            message: "âš ï¸ Facebook API rate limit reached. Please wait a few minutes and try again."
                         }));
                         setIsLoading(false);
                         isFetchingRef.current = false;
@@ -611,7 +613,7 @@ export default function BulkMessagePage() {
                                             totalContacts: finalTotal,
                                             // NEVER decrease page number - only move forward
                                             ...(data.currentPage !== undefined && { currentPageNumber: newPageNumber }),
-                                            message: `✓ ${data.pageName}: ${data.contactsCount} contacts (Total: ${finalTotal})`
+                                            message: `âœ“ ${data.pageName}: ${data.contactsCount} contacts (Total: ${finalTotal})`
                                         };
                                     });
                                     break;
@@ -619,7 +621,7 @@ export default function BulkMessagePage() {
                                 case "page_error":
                                     setFetchingProgress(prev => ({
                                         ...prev,
-                                        message: `⚠ ${data.pageName}: ${data.error}`
+                                        message: `âš  ${data.pageName}: ${data.error}`
                                     }));
                                     break;
                                 
@@ -638,17 +640,17 @@ export default function BulkMessagePage() {
                                     isConnectingRef.current = false;
                                     abortControllerRef.current = null;
                                     // Keep hasFetchedRef as true since we completed successfully
-                                    console.log(`✅ [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
+                                    console.log(`âœ… [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
                                     // Trigger immediate check for new contacts after sync completes
                                     setTimeout(() => {
                                         if (!isFetchingRef.current && !fetchingProgress.isFetching) {
-                                            console.log("[Frontend] 🔄 Auto-checking for new contacts after sync...");
+                                            console.log("[Frontend] ðŸ”„ Auto-checking for new contacts after sync...");
                                             fetch("/api/facebook/contacts/background").then(response => {
                                                 if (response.ok) {
                                                     return response.json().then((jobData: any) => {
                                                         const job = jobData.job;
                                                         if (job && job.status === "pending" && !isFetchingRef.current) {
-                                                            console.log("[Frontend] 🚀 New contacts detected, starting auto-fetch...");
+                                                            console.log("[Frontend] ðŸš€ New contacts detected, starting auto-fetch...");
                                                             hasFetchedRef.current = false;
                                                             fetchContactsRealtime();
                                                         }
@@ -677,7 +679,7 @@ export default function BulkMessagePage() {
                                         const storageKey = `hasFetched_${userId}`;
                                         localStorage.removeItem(storageKey);
                                     }
-                                    console.error(`❌ [Frontend] Fetch error: ${data.message}`);
+                                    console.error(`âŒ [Frontend] Fetch error: ${data.message}`);
                                     break;
                             }
                         } catch (e) {
@@ -951,7 +953,21 @@ export default function BulkMessagePage() {
                 
                 // Now proceed with fetching if needed
                 if (status === "authenticated" && session) {
-                    // Fetch pages first
+                    let hasStartedStream = false;
+                    const maybeStartStream = () => {
+                        if (hasStartedStream) return;
+                        if (!isFetchingRef.current && (shouldReconnect || !storedHasFetched)) {
+                            hasStartedStream = true;
+                            const fetchFn = fetchContactsRealtimeRef.current || fetchContactsRealtime;
+                            if (fetchFn) {
+                                fetchFn();
+                            } else {
+                                console.error("[Frontend] fetchContactsRealtime function not available!");
+                            }
+                        }
+                    };
+
+                    // Fetch pages first, but always attempt to reconnect to the stream even if this fails
                     fetch("/api/facebook/pages").then(pagesResponse => {
                         let fetchedPages: any[] = [];
                         if (pagesResponse.ok) {
@@ -967,16 +983,19 @@ export default function BulkMessagePage() {
                                 setPages(pageNames);
                                 
                                 // Then fetch contacts in real-time (only if not already fetching and should fetch)
-                                if (!isFetchingRef.current && (shouldReconnect || !storedHasFetched)) {
-                                    const fetchFn = fetchContactsRealtimeRef.current || fetchContactsRealtime;
-                                    fetchFn();
-                                }
+                                maybeStartStream();
                             });
+                        } else {
+                            // If the pages call fails (e.g., during refresh), still reconnect to the stream
+                            console.error("[Frontend] Failed to load pages before reconnecting:", pagesResponse.status);
+                            maybeStartStream();
                         }
                     }).catch(error => {
                         console.error("Error fetching data:", error);
                         setIsLoading(false);
                         isFetchingRef.current = false;
+                        // Ensure we still try to reconnect to stream even if pages fetch fails
+                        maybeStartStream();
                     });
                 }
             });
@@ -1157,7 +1176,7 @@ export default function BulkMessagePage() {
                     
                     // Log status changes for debugging
                     if (currentStatus !== lastJobStatus) {
-                        console.log(`[Frontend] Job status changed: ${lastJobStatus} → ${currentStatus}`, {
+                        console.log(`[Frontend] Job status changed: ${lastJobStatus} â†’ ${currentStatus}`, {
                             jobId: job?.id,
                             message: job?.message,
                             isPaused: job?.is_paused
@@ -1167,7 +1186,7 @@ export default function BulkMessagePage() {
                     
                     // If there's a pending job triggered by webhook, start fetching immediately
                     if (job && job.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
-                        console.log("[Frontend] 🚀 New message detected, starting immediate auto-fetch...", {
+                        console.log("[Frontend] ðŸš€ New message detected, starting immediate auto-fetch...", {
                             jobId: job.id,
                             message: job.message,
                             pageName: job.current_page_name
@@ -1637,13 +1656,21 @@ export default function BulkMessagePage() {
             const data = await response.json();
 
             if (response.ok && data.success) {
-                alert(`✅ Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n⚠️ ${data.results.failed} failed.` : ''}`);
+                if (data.results?.scheduled) {
+                    setScheduledNotice({
+                        id: data.results.scheduledMessageId,
+                        scheduledFor: data.results.scheduledFor,
+                        total: data.results.total || selectedContactIds.length || 0
+                    });
+                } else {
+                    alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
+                }
             } else {
-                alert(`❌ Failed to send messages: ${data.error || "Unknown error"}`);
+                alert(`Failed to send messages: ${data.error || "Unknown error"}`);
             }
         } catch (error: any) {
             console.error("Error sending broadcast:", error);
-            alert(`❌ Error: ${error.message || "Failed to send messages"}`);
+            alert(`Error: ${error.message || "Failed to send messages"}`);
         } finally {
             setActiveSends(prev => {
                 const newCount = prev - 1;
@@ -1653,6 +1680,7 @@ export default function BulkMessagePage() {
                     setSelectedContactIds([]);
                     setScheduleDate("");
                     setAttachedFile(null);
+                    setScheduledNotice(null);
                     if (fileInputRef.current) {
                         fileInputRef.current.value = "";
                     }
@@ -1670,6 +1698,40 @@ export default function BulkMessagePage() {
         const contactId = c.id || c.contact_id || c.contactId;
         return contactId && selectedContactIds.includes(contactId);
     });
+
+    const handleCancelScheduled = async () => {
+        if (!scheduledNotice) return;
+        setIsCancellingSchedule(true);
+        try {
+            const response = await fetch("/api/facebook/messages/cancel-scheduled", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ scheduledMessageId: scheduledNotice.id }),
+            });
+
+            const data = await response.json();
+                        if (response.ok && data.success) {
+                if (data.results?.scheduled) {
+                    setScheduledNotice({
+                        id: data.results.scheduledMessageId,
+                        scheduledFor: data.results.scheduledFor,
+                        total: data.results.total || selectedContactIds.length || 0
+                    });
+                } else {
+                    alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
+                }
+            } else {
+                alert(`Failed to send messages: ${data.error || "Unknown error"}`);
+            }
+        } catch (error: any) {
+            console.error("Error canceling scheduled message:", error);
+            alert(`Error canceling scheduled message: ${error.message || "Unknown error"}`);
+        } finally {
+            setIsCancellingSchedule(false);
+        }
+    };
 
     // Custom Styles for Animations
     const customStyles = `
@@ -1840,6 +1902,26 @@ export default function BulkMessagePage() {
             </header>
 
             <main className="relative z-10 mx-auto max-w-5xl px-6 py-8 pb-48">
+                {scheduledNotice && (
+                    <div className="mb-6 rounded-xl border border-indigo-500/40 bg-indigo-500/10 px-4 py-3 text-sm text-indigo-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                        <div>
+                            <div className="font-semibold text-indigo-200">Scheduled broadcast created</div>
+                            <div className="text-indigo-100/80">
+                                {`Scheduled ${scheduledNotice.total} message(s) for ${new Date(scheduledNotice.scheduledFor).toLocaleString()}`}
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <button
+                                onClick={handleCancelScheduled}
+                                disabled={isCancellingSchedule}
+                                className="rounded-lg border border-white/20 px-3 py-2 text-xs font-semibold text-white hover:border-white/50 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {isCancellingSchedule ? "Cancelling..." : "Cancel schedule"}
+                            </button>
+                        </div>
+                    </div>
+                )}
+
                 {/* Controls Grid */}
                 <div className="mb-8 grid gap-4 md:grid-cols-[1.5fr_1fr_1fr]">
                     <div className="relative group">
@@ -2354,7 +2436,7 @@ export default function BulkMessagePage() {
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <p className="text-xs font-medium text-zinc-200 truncate">{attachedFile.name}</p>
-                                            <p className="text-[10px] text-zinc-500">{getFileTypeLabel()} • {(attachedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                                            <p className="text-[10px] text-zinc-500">{getFileTypeLabel()} â€¢ {(attachedFile.size / 1024 / 1024).toFixed(2)} MB</p>
                                         </div>
                                         <button
                                             onClick={handleRemoveFile}
@@ -2774,3 +2856,7 @@ export default function BulkMessagePage() {
         </div>
     );
 }
+
+
+
+
