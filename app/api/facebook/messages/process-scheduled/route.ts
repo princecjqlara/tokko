@@ -271,7 +271,8 @@ async function processScheduledMessage(scheduledMessage: ScheduledMessageRecord)
       messageErrors.push(...result.errors);
     }
 
-    const finalStatus = messageFailed === 0 ? "sent" : (messageSuccess > 0 ? "sent" : "failed");
+    // If nothing sent, treat as failed even if no explicit errors were captured
+    const finalStatus = messageSuccess > 0 ? "sent" : "failed";
 
     await supabaseServer
       .from("scheduled_messages")
