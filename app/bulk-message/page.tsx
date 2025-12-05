@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
@@ -325,6 +325,14 @@ export default function BulkMessagePage() {
     
     // Define fetchContactsRealtime outside useEffect so it can be called from multiple places
     const fetchContactsRealtime = React.useCallback(async () => {
+        const storageKey = userId ? `hasFetched_${userId}` : null;
+        const markFetched = () => {
+            hasFetchedRef.current = true;
+            if (storageKey) {
+                localStorage.setItem(storageKey, 'true');
+            }
+        };
+        
         // Prevent multiple simultaneous calls - check both refs
         if (isFetchingRef.current || isConnectingRef.current) {
             console.log("[Frontend] fetchContactsRealtime already in progress, skipping duplicate call", {
@@ -344,19 +352,18 @@ export default function BulkMessagePage() {
         // Mark as connecting immediately to prevent race conditions
         isConnectingRef.current = true;
         isFetchingRef.current = true;
-        hasFetchedRef.current = true;
-        const storageKey = `hasFetched_${userId}`;
-        if (userId) localStorage.setItem(storageKey, 'true');
+        hasFetchedRef.current = false;
         
         // Get current contact count before starting - preserve existing count
         const currentContactCount = contacts.length || fetchingProgress.totalContacts || 0;
+        const initialTotal = Math.max(currentContactCount, fetchingProgress.totalContacts || 0, contacts.length || 0);
         
         setIsLoading(true);
         setFetchingProgress(prev => ({
             ...prev,
             isFetching: true,
             // NEVER reset totalContacts to 0 if we already have contacts - always preserve the count
-            totalContacts: Math.max(currentContactCount, prev.totalContacts),
+            totalContacts: Math.max(initialTotal, prev.totalContacts),
             recentContacts: prev.recentContacts || [],
             message: currentContactCount > 0 
                 ? `Resuming fetch... (${currentContactCount} contacts already loaded)`
@@ -409,7 +416,7 @@ export default function BulkMessagePage() {
                         setFetchingProgress(prev => ({
                             ...prev,
                             isFetching: false,
-                            message: "âš ï¸ Facebook API rate limit reached. Please wait a few minutes and try again."
+                            message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
                         }));
                         setIsLoading(false);
                         isFetchingRef.current = false;
@@ -613,7 +620,7 @@ export default function BulkMessagePage() {
                                             totalContacts: finalTotal,
                                             // NEVER decrease page number - only move forward
                                             ...(data.currentPage !== undefined && { currentPageNumber: newPageNumber }),
-                                            message: `âœ“ ${data.pageName}: ${data.contactsCount} contacts (Total: ${finalTotal})`
+                                            message: `✓ ${data.pageName}: ${data.contactsCount} contacts (Total: ${finalTotal})`
                                         };
                                     });
                                     break;
@@ -621,7 +628,7 @@ export default function BulkMessagePage() {
                                 case "page_error":
                                     setFetchingProgress(prev => ({
                                         ...prev,
-                                        message: `âš  ${data.pageName}: ${data.error}`
+                                        message: `⚠ ${data.pageName}: ${data.error}`
                                     }));
                                     break;
                                 
@@ -640,17 +647,18 @@ export default function BulkMessagePage() {
                                     isConnectingRef.current = false;
                                     abortControllerRef.current = null;
                                     // Keep hasFetchedRef as true since we completed successfully
-                                    console.log(`âœ… [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
+                                    markFetched();
+                                    console.log(`✅ [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
                                     // Trigger immediate check for new contacts after sync completes
                                     setTimeout(() => {
                                         if (!isFetchingRef.current && !fetchingProgress.isFetching) {
-                                            console.log("[Frontend] ðŸ”„ Auto-checking for new contacts after sync...");
+                                            console.log("[Frontend] Auto-checking for new contacts after sync...");
                                             fetch("/api/facebook/contacts/background").then(response => {
                                                 if (response.ok) {
                                                     return response.json().then((jobData: any) => {
                                                         const job = jobData.job;
                                                         if (job && job.status === "pending" && !isFetchingRef.current) {
-                                                            console.log("[Frontend] ðŸš€ New contacts detected, starting auto-fetch...");
+                                                            console.log("[Frontend] 🚀 New contacts detected, starting auto-fetch...");
                                                             hasFetchedRef.current = false;
                                                             fetchContactsRealtime();
                                                         }
@@ -675,11 +683,10 @@ export default function BulkMessagePage() {
                                     abortControllerRef.current = null;
                                     // Reset hasFetchedRef on error to allow retry
                                     hasFetchedRef.current = false;
-                                    if (userId) {
-                                        const storageKey = `hasFetched_${userId}`;
+                                    if (storageKey) {
                                         localStorage.removeItem(storageKey);
                                     }
-                                    console.error(`âŒ [Frontend] Fetch error: ${data.message}`);
+                                    console.error(`❌ [Frontend] Fetch error: ${data.message}`);
                                     break;
                             }
                         } catch (e) {
@@ -701,6 +708,9 @@ export default function BulkMessagePage() {
                 isFetchingRef.current = false;
                 isConnectingRef.current = false;
                 hasFetchedRef.current = false; // Reset to allow manual retry
+                if (storageKey) {
+                    localStorage.removeItem(storageKey);
+                }
             } else {
                 // AbortError means user cancelled, still reset refs
                 isFetchingRef.current = false;
@@ -921,6 +931,9 @@ export default function BulkMessagePage() {
         // Load existing contacts first
         loadExistingContacts().then(existingCount => {
             const storedHasFetched = userId ? localStorage.getItem(storageKey) === 'true' : false;
+            if (storedHasFetched && !hasFetchedRef.current) {
+                hasFetchedRef.current = true;
+            }
             
             console.log("[Frontend] useEffect triggered:", {
                 status,
@@ -939,14 +952,18 @@ export default function BulkMessagePage() {
             
             // Check for running job first (before checking hasFetchedRef)
             checkAndReconnect().then(shouldReconnect => {
+                const allowAutoFetch = shouldReconnect || !storedHasFetched || existingCount === 0;
+                
                 if (shouldReconnect) {
-                    // Job is running, reconnect to stream
                     console.log("[Frontend] Reconnecting to active job...");
-                    // Continue to fetchContactsRealtime below
-                } else if (hasFetchedRef.current && storedHasFetched && !fetchingProgress.isFetching) {
-                    console.log("[Frontend] Already fetched for this user and no active job, skipping automatic fetch...");
-                    // Don't return - still allow manual fetch if user wants
-                    // Only skip if we're not in a fetching state
+                } else if (!allowAutoFetch && hasFetchedRef.current) {
+                    console.log("[Frontend] Already fetched for this user and no active job, waiting for new messages before auto-fetching...");
+                    setFetchingProgress(prev => ({
+                        ...prev,
+                        isFetching: false,
+                        totalContacts: Math.max(prev.totalContacts, existingCount, contacts.length),
+                        message: prev.message || "Contacts loaded. Auto-sync will start when new messages arrive."
+                    }));
                 } else {
                     console.log("[Frontend] Starting new contact fetch process...");
                 }
@@ -955,8 +972,8 @@ export default function BulkMessagePage() {
                 if (status === "authenticated" && session) {
                     let hasStartedStream = false;
                     const maybeStartStream = () => {
-                        if (hasStartedStream) return;
-                        if (!isFetchingRef.current && (shouldReconnect || !storedHasFetched)) {
+                        if (hasStartedStream || !allowAutoFetch) return;
+                        if (!isFetchingRef.current) {
                             hasStartedStream = true;
                             const fetchFn = fetchContactsRealtimeRef.current || fetchContactsRealtime;
                             if (fetchFn) {
@@ -1184,7 +1201,7 @@ export default function BulkMessagePage() {
                     
                     // Log status changes for debugging
                     if (currentStatus !== lastJobStatus) {
-                        console.log(`[Frontend] Job status changed: ${lastJobStatus} â†’ ${currentStatus}`, {
+                        console.log(`[Frontend] Job status changed: ${lastJobStatus} → ${currentStatus}`, {
                             jobId: job?.id,
                             message: job?.message,
                             isPaused: job?.is_paused
@@ -1194,7 +1211,7 @@ export default function BulkMessagePage() {
                     
                     // If there's a pending job triggered by webhook, start fetching immediately
                     if (job && job.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
-                        console.log("[Frontend] ðŸš€ New message detected, starting immediate auto-fetch...", {
+                        console.log("[Frontend] 🚀 New message detected, starting immediate auto-fetch...", {
                             jobId: job.id,
                             message: job.message,
                             pageName: job.current_page_name
@@ -2444,7 +2461,7 @@ export default function BulkMessagePage() {
                                         </div>
                                         <div className="flex-1 min-w-0">
                                             <p className="text-xs font-medium text-zinc-200 truncate">{attachedFile.name}</p>
-                                            <p className="text-[10px] text-zinc-500">{getFileTypeLabel()} â€¢ {(attachedFile.size / 1024 / 1024).toFixed(2)} MB</p>
+                                            <p className="text-[10px] text-zinc-500">{getFileTypeLabel()} • {(attachedFile.size / 1024 / 1024).toFixed(2)} MB</p>
                                         </div>
                                         <button
                                             onClick={handleRemoveFile}
@@ -2864,7 +2881,4 @@ export default function BulkMessagePage() {
         </div>
     );
 }
-
-
-
 

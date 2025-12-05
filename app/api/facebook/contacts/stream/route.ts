@@ -30,6 +30,9 @@ export async function GET(request: NextRequest) {
     let allContacts: any[] = [];
     let processedPagesCount = 0;
     let existingContactCount = 0;
+    let pages: any[] = [];
+    let heartbeatInterval: NodeJS.Timeout | null = null;
+    let hardStopTimeout: NodeJS.Timeout | null = null;
     
     const stream = new ReadableStream({
       async start(controller) {
@@ -42,11 +45,12 @@ export async function GET(request: NextRequest) {
           if (!streamCompleted) {
             console.warn("⚠️ [Stream Route] Approaching Vercel timeout, forcing completion...");
             streamCompleted = true;
+            clearTimers();
             try {
               send({ 
                 type: "complete", 
                 message: "Sync partially completed due to timeout. Some pages may not have been processed. You can sync again to continue.",
-                totalContacts: existingContactCount + allContacts.length,
+                totalContacts: allContacts.length,
                 newContactsCount: allContacts.length
               });
               controller.close();
@@ -87,13 +91,62 @@ export async function GET(request: NextRequest) {
           }
         };
 
+        const clearTimers = () => {
+          if (streamTimeoutId) {
+            clearTimeout(streamTimeoutId);
+            streamTimeoutId = null;
+          }
+          if (hardStopTimeout) {
+            clearTimeout(hardStopTimeout);
+            hardStopTimeout = null;
+          }
+          if (heartbeatInterval) {
+            clearInterval(heartbeatInterval);
+            heartbeatInterval = null;
+          }
+        };
+
+        // Hard stop after STREAM_TIMEOUT as a final safety to avoid stuck streams
+        hardStopTimeout = setTimeout(() => {
+          if (!streamCompleted) {
+            console.warn("[Stream Route] Global stream timeout reached, closing stream to avoid getting stuck");
+            streamCompleted = true;
+            clearTimers();
+            try {
+              send({
+                type: "complete",
+                message: "Sync timed out. Some pages may be incomplete, please resync.",
+                totalContacts: existingContactCount + allContacts.length,
+                newContactsCount: allContacts.length
+              });
+              controller.close();
+            } catch (err) {
+              console.error("Error closing stream after global timeout:", err);
+            }
+          }
+        }, STREAM_TIMEOUT);
+
+        // Heartbeat to keep the connection alive and surface progress even if upstream is quiet
+        heartbeatInterval = setInterval(() => {
+          if (streamCompleted) return;
+          const safeTotal = existingContactCount + allContacts.length;
+          const totalPages = pages.length > 0 ? pages.length : undefined;
+          send({
+            type: "status",
+            message: "Still syncing contacts...",
+            totalContacts: safeTotal,
+            currentPage: processedPagesCount || undefined,
+            totalPages
+          });
+        }, 20000);
+
         try {
           console.log("[Stream Route] Getting session...");
           const session = await getServerSession(authOptions);
         
         if (!session || !(session as any).accessToken) {
           send({ type: "error", message: "Unauthorized" });
-          if (streamTimeoutId) clearTimeout(streamTimeoutId);
+          clearTimers();
           streamCompleted = true;
           controller.close();
           return;
@@ -242,6 +295,8 @@ export async function GET(request: NextRequest) {
               type: "error", 
               message: `Database error: ${testError.message}. Please check if the contacts table exists and RLS is configured correctly.` 
             });
+            clearTimers();
+            streamCompleted = true;
             controller.close();
             return;
           }
@@ -252,6 +307,8 @@ export async function GET(request: NextRequest) {
             type: "error", 
             message: `Database connection failed: ${testErr.message}` 
           });
+          clearTimers();
+          streamCompleted = true;
           controller.close();
           return;
         }
@@ -361,6 +418,8 @@ export async function GET(request: NextRequest) {
               } else {
                 send({ type: "error", message: `Failed to fetch pages: ${errorData.error?.message || "Unknown error"}` });
               }
+              clearTimers();
+              streamCompleted = true;
               controller.close();
               return;
             }
@@ -391,12 +450,16 @@ export async function GET(request: NextRequest) {
               } else {
                 send({ type: "error", message: `Error fetching pages: ${pagesError.message || "Unknown error"}` });
               }
+              clearTimers();
+              streamCompleted = true;
               controller.close();
               return;
             }
           } catch (fallbackError: any) {
             console.error("Fallback also failed:", fallbackError);
             send({ type: "error", message: `Error fetching pages: ${pagesError.message || "Unknown error"}` });
+            clearTimers();
+            streamCompleted = true;
             controller.close();
             return;
           }
@@ -406,7 +469,7 @@ export async function GET(request: NextRequest) {
         if (pages.length === 0) {
           console.error("[Stream Route] No pages found - cannot proceed with contact fetch");
           send({ type: "error", message: "No pages found. Please make sure you have connected Facebook pages with messaging permissions." });
-          if (streamTimeoutId) clearTimeout(streamTimeoutId);
+          clearTimers();
           streamCompleted = true;
           controller.close();
           return;
@@ -470,8 +533,8 @@ export async function GET(request: NextRequest) {
               }
             }
             
-            // Update job status
-            const finalTotal = existingContactCount + allContacts.length;
+            // Update job status - use allContacts.length as it contains all unique contacts found
+            const finalTotal = allContacts.length;
             try {
               await updateJobStatus({
                 status: "completed",
@@ -494,10 +557,7 @@ export async function GET(request: NextRequest) {
             });
             
             // Clear timeout and close stream
-            if (streamTimeoutId) {
-              clearTimeout(streamTimeoutId);
-              streamTimeoutId = null;
-            }
+            clearTimers();
             streamCompleted = true;
             controller.close();
             return; // Exit the function
@@ -632,6 +692,8 @@ export async function GET(request: NextRequest) {
             let currentConversationsUrl: string | null = conversationsUrl;
             let paginationIterations = 0;
             const MAX_PAGINATION_ITERATIONS = 1000; // Safety limit to prevent infinite loops
+            let lastConversationsUrl: string | null = null;
+            let stuckPaginationCount = 0;
             
             // Fetch conversations with pagination
             while (currentConversationsUrl && paginationIterations < MAX_PAGINATION_ITERATIONS) {
@@ -645,6 +707,24 @@ export async function GET(request: NextRequest) {
               const timeoutId = setTimeout(() => fetchController.abort(), 60000);
               
               try {
+                // Detect if pagination is stuck on the same URL
+                if (lastConversationsUrl === currentConversationsUrl) {
+                  stuckPaginationCount++;
+                } else {
+                  stuckPaginationCount = 0;
+                }
+                lastConversationsUrl = currentConversationsUrl;
+                if (stuckPaginationCount >= 3) {
+                  console.warn(`ƒsÿ‹,? [Stream Route] Pagination stalled for ${page.name}, skipping to next page`);
+                  send({
+                    type: "page_error",
+                    pageName: page.name,
+                    error: "Pagination stalled, moving to next page"
+                  });
+                  currentConversationsUrl = null;
+                  break;
+                }
+                
                 const conversationsResponse: Response = await fetch(currentConversationsUrl, {
                   signal: fetchController.signal
                 });
@@ -1135,11 +1215,8 @@ export async function GET(request: NextRequest) {
         
         console.log(`✅ [Stream Route] Finished processing all ${pages.length} pages. Total contacts found: ${allContacts.length}`);
 
-        // Clear timeout since we're completing normally
-        if (streamTimeoutId) {
-          clearTimeout(streamTimeoutId);
-          streamTimeoutId = null;
-        }
+        // Clear timers since we're completing normally
+        clearTimers();
         
         // Update job to completed with total count including existing
         const finalTotalContacts = existingContactCount + allContacts.length;
@@ -1187,11 +1264,8 @@ export async function GET(request: NextRequest) {
           console.error("❌ [Stream Route] Error closing controller:", closeError);
         }
         } catch (error: any) {
-          // Clear timeout on error
-          if (streamTimeoutId) {
-            clearTimeout(streamTimeoutId);
-            streamTimeoutId = null;
-          }
+          // Clear timers on error
+          clearTimers();
           
           console.error("❌ [Stream Route] Stream error:", error);
           console.error("❌ [Stream Route] Error stack:", error?.stack);
@@ -1260,4 +1334,6 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+
+
 
