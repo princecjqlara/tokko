@@ -167,16 +167,25 @@ async function handleConversationEvent(pageId: string, conversation: any) {
 
 async function triggerContactFetch(pageId: string, contactId: string) {
   try {
+    console.log(`[Webhook] triggerContactFetch called for page ${pageId}, contact ${contactId}`);
+    
     // Find all users who have access to this page
     const { data: userPages, error } = await supabaseServer
       .from("user_pages")
       .select("user_id")
       .eq("page_id", pageId);
 
-    if (error || !userPages || userPages.length === 0) {
-      console.log(`No users found for page ${pageId}`);
+    if (error) {
+      console.error(`[Webhook] Error fetching user_pages for page ${pageId}:`, error);
       return;
     }
+
+    if (!userPages || userPages.length === 0) {
+      console.log(`[Webhook] No users found for page ${pageId} - webhook event will be ignored`);
+      return;
+    }
+
+    console.log(`[Webhook] Found ${userPages.length} user(s) for page ${pageId}`);
 
     // Get page name for better logging
     const { data: pageData } = await supabaseServer
@@ -191,64 +200,106 @@ async function triggerContactFetch(pageId: string, contactId: string) {
     for (const userPage of userPages) {
       const userId = userPage.user_id;
       
-      // Check if there's already a running or pending job
-      const { data: existingJob } = await supabaseServer
-        .from("fetch_jobs")
-        .select("id, status")
-        .eq("user_id", userId)
-        .in("status", ["running", "pending", "paused"])
-        .order("updated_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      if (!existingJob || existingJob.status === "completed" || existingJob.status === "failed") {
-        // Get current contact count
-        const { count } = await supabaseServer
-          .from("contacts")
-          .select("*", { count: "exact", head: true })
-          .eq("user_id", userId);
-
-        // Create a new pending job that will trigger a fetch for this specific page
-        // The frontend will pick this up and start fetching immediately
-        await supabaseServer
+      try {
+        // Check if there's already a running or pending job
+        const { data: existingJob, error: jobCheckError } = await supabaseServer
           .from("fetch_jobs")
-          .insert({
-            user_id: userId,
-            status: "pending",
-            is_paused: false,
-            current_page_name: pageName,
-            message: `🔄 New message from ${contactId} on ${pageName} - auto-fetching...`,
-            total_contacts: count || 0,
-          });
-        
-        console.log(`✅ Created pending fetch job for user ${userId} due to new message from ${contactId} on ${pageName}`);
-      } else {
-        // If job is paused, resume it
-        if (existingJob.status === "paused") {
-          await supabaseServer
-            .from("fetch_jobs")
-            .update({
-              status: "running",
-              is_paused: false,
-              message: `🔄 Resumed due to new message from ${contactId} on ${pageName}`,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", existingJob.id);
-          
-          console.log(`✅ Resumed fetch job ${existingJob.id} for user ${userId} due to new message`);
-        } else if (existingJob.status === "running") {
-          // Job is already running, just update message
-          await supabaseServer
-            .from("fetch_jobs")
-            .update({
-              message: `🔄 Processing - new message from ${contactId} on ${pageName} detected`,
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", existingJob.id);
+          .select("id, status, is_paused")
+          .eq("user_id", userId)
+          .in("status", ["running", "pending", "paused"])
+          .order("updated_at", { ascending: false })
+          .limit(1)
+          .maybeSingle();
+
+        if (jobCheckError) {
+          console.error(`[Webhook] Error checking existing job for user ${userId}:`, jobCheckError);
+          continue;
         }
+
+        if (!existingJob || existingJob.status === "completed" || existingJob.status === "failed") {
+          // Get current contact count
+          const { count, error: countError } = await supabaseServer
+            .from("contacts")
+            .select("*", { count: "exact", head: true })
+            .eq("user_id", userId);
+
+          if (countError) {
+            console.error(`[Webhook] Error getting contact count for user ${userId}:`, countError);
+          }
+
+          // Create a new pending job that will trigger a fetch for this specific page
+          // The frontend will pick this up and start fetching immediately
+          const { data: newJob, error: insertError } = await supabaseServer
+            .from("fetch_jobs")
+            .insert({
+              user_id: userId,
+              status: "pending",
+              is_paused: false,
+              current_page_name: pageName,
+              message: `🔄 New message from ${contactId} on ${pageName} - auto-fetching...`,
+              total_contacts: count || 0,
+            })
+            .select()
+            .single();
+        
+          if (insertError) {
+            console.error(`[Webhook] Error creating fetch job for user ${userId}:`, insertError);
+          } else {
+            console.log(`✅ [Webhook] Created pending fetch job ${newJob.id} for user ${userId} due to new message from ${contactId} on ${pageName}`);
+          }
+        } else {
+          // If job is paused, resume it
+          if (existingJob.status === "paused") {
+            const { error: updateError } = await supabaseServer
+              .from("fetch_jobs")
+              .update({
+                status: "running",
+                is_paused: false,
+                message: `🔄 Resumed due to new message from ${contactId} on ${pageName}`,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", existingJob.id);
+            
+            if (updateError) {
+              console.error(`[Webhook] Error resuming job ${existingJob.id}:`, updateError);
+            } else {
+              console.log(`✅ [Webhook] Resumed fetch job ${existingJob.id} for user ${userId} due to new message`);
+            }
+          } else if (existingJob.status === "running") {
+            // Job is already running, just update message
+            const { error: updateError } = await supabaseServer
+              .from("fetch_jobs")
+              .update({
+                message: `🔄 Processing - new message from ${contactId} on ${pageName} detected`,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", existingJob.id);
+            
+            if (updateError) {
+              console.error(`[Webhook] Error updating job ${existingJob.id}:`, updateError);
+            }
+          } else if (existingJob.status === "pending") {
+            // Job is already pending, just update message and timestamp
+            const { error: updateError } = await supabaseServer
+              .from("fetch_jobs")
+              .update({
+                message: `🔄 New message from ${contactId} on ${pageName} - auto-fetching...`,
+                updated_at: new Date().toISOString(),
+              })
+              .eq("id", existingJob.id);
+            
+            if (updateError) {
+              console.error(`[Webhook] Error updating pending job ${existingJob.id}:`, updateError);
+            } else {
+              console.log(`✅ [Webhook] Updated pending job ${existingJob.id} for user ${userId} with new message info`);
+            }
+          }
+        }
+      } catch (userError: any) {
+        console.error(`[Webhook] Error processing user ${userId}:`, userError);
       }
     }
   } catch (error: any) {
-    console.error("Error triggering contact fetch:", error);
+    console.error("[Webhook] Error triggering contact fetch:", error);
   }
 }

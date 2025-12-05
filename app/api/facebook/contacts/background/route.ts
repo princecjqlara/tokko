@@ -14,23 +14,54 @@ export async function GET(request: NextRequest) {
 
     const userId = (session.user as any).id;
 
-    // Get the most recent fetch job
-    const { data: job, error } = await supabaseServer
+    // Get the most recent fetch job (prioritize pending/running jobs)
+    const { data: activeJob, error: activeError } = await supabaseServer
       .from("fetch_jobs")
       .select("*")
       .eq("user_id", userId)
+      .in("status", ["pending", "running", "paused"])
       .order("updated_at", { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    if (error) {
-      console.error("Error fetching job:", error);
+    // If no active job, get the most recent job (including completed/failed)
+    let job = activeJob;
+    if (!job) {
+      const { data: recentJob, error: recentError } = await supabaseServer
+        .from("fetch_jobs")
+        .select("*")
+        .eq("user_id", userId)
+        .order("updated_at", { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      
+      if (recentError) {
+        console.error("Error fetching recent job:", recentError);
+      } else {
+        job = recentJob;
+      }
+    }
+
+    if (activeError && !job) {
+      console.error("Error fetching active job:", activeError);
       return NextResponse.json({ error: "Failed to fetch job status" }, { status: 500 });
+    }
+
+    const jobStatus = (job as any)?.status || "none";
+    
+    // Log for debugging if there's a pending job
+    if (jobStatus === "pending") {
+      console.log(`[Background API] Found pending job for user ${userId}:`, {
+        jobId: (job as any)?.id,
+        message: (job as any)?.message,
+        pageName: (job as any)?.current_page_name
+      });
     }
 
     return NextResponse.json({
       job: job || null,
-      status: (job as any)?.status || "none",
+      status: jobStatus,
+      hasPendingJob: jobStatus === "pending",
     });
   } catch (error: any) {
     console.error("Error in background fetch GET:", error);

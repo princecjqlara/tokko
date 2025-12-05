@@ -7,31 +7,85 @@ import { supabaseServer } from "@/lib/supabase-server";
 
 export async function GET(request: NextRequest) {
   try {
-    // Optional: Add authentication/authorization check here
-    // For now, we'll allow it to be called by anyone (you may want to add a secret token)
+    // Authentication check for cron endpoint
+    // Vercel Cron doesn't automatically send auth headers, so we check for:
+    // 1. Authorization header with Bearer token (for manual calls)
+    // 2. x-vercel-cron header (from Vercel Cron - if present)
+    // 3. User-Agent that indicates Vercel (for Vercel Cron requests)
     const authHeader = request.headers.get("authorization");
+    const vercelCronHeader = request.headers.get("x-vercel-cron");
+    const userAgent = request.headers.get("user-agent") || "";
     const cronSecret = process.env.CRON_SECRET;
     
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-      return NextResponse.json(
-        { error: "Unauthorized" },
-        { status: 401 }
-      );
+    // Check if this is a Vercel Cron request
+    const isVercelCron = vercelCronHeader === "1" || userAgent.includes("vercel");
+    
+    // If CRON_SECRET is set, require authentication unless it's from Vercel Cron
+    if (cronSecret) {
+      const hasValidAuth = authHeader === `Bearer ${cronSecret}`;
+      
+      // Allow if: valid Bearer token OR it's a Vercel Cron request
+      if (!hasValidAuth && !isVercelCron) {
+        console.log("[Process Scheduled] Unauthorized request:", {
+          hasAuthHeader: !!authHeader,
+          hasVercelCron: !!vercelCronHeader,
+          userAgent: userAgent.substring(0, 50)
+        });
+        return NextResponse.json(
+          { error: "Unauthorized" },
+          { status: 401 }
+        );
+      }
     }
+    
+    console.log("[Process Scheduled] Request authorized", {
+      isVercelCron,
+      hasAuthHeader: !!authHeader,
+      timestamp: new Date().toISOString()
+    });
 
     const now = new Date().toISOString();
+    // Also consider messages that have been "processing" for more than 30 minutes as stuck
+    const thirtyMinutesAgo = new Date(Date.now() - 30 * 60 * 1000).toISOString();
 
     // Find all pending scheduled messages that are due
-    const { data: scheduledMessages, error: fetchError } = await supabaseServer
+    const { data: pendingMessages, error: pendingError } = await supabaseServer
       .from("scheduled_messages")
       .select("*")
       .eq("status", "pending")
       .lte("scheduled_for", now)
       .order("scheduled_for", { ascending: true })
-      .limit(10); // Process up to 10 messages at a time to avoid timeouts
+      .limit(10);
+
+    // Also find messages stuck in "processing" status (likely from a failed cron run)
+    const { data: stuckMessages, error: stuckError } = await supabaseServer
+      .from("scheduled_messages")
+      .select("*")
+      .eq("status", "processing")
+      .lte("updated_at", thirtyMinutesAgo)
+      .order("scheduled_for", { ascending: true })
+      .limit(5);
+
+    // Combine both results, prioritizing pending messages
+    const scheduledMessages = [
+      ...(pendingMessages || []), 
+      ...(stuckMessages || [])
+    ].slice(0, 10); // Limit to 10 total
+    
+    const fetchError = pendingError || stuckError;
+    
+    // Log if we found stuck messages
+    if (stuckMessages && stuckMessages.length > 0) {
+      console.log(`[Process Scheduled] Found ${stuckMessages.length} stuck message(s) in processing status`);
+    }
 
     if (fetchError) {
-      console.error("Error fetching scheduled messages:", fetchError);
+      console.error("[Process Scheduled] Error fetching scheduled messages:", {
+        error: fetchError,
+        message: fetchError.message,
+        code: fetchError.code,
+        details: fetchError.details
+      });
       return NextResponse.json(
         { error: "Failed to fetch scheduled messages", details: fetchError.message },
         { status: 500 }
@@ -39,6 +93,10 @@ export async function GET(request: NextRequest) {
     }
 
     if (!scheduledMessages || scheduledMessages.length === 0) {
+      console.log("[Process Scheduled] No scheduled messages to process", {
+        timestamp: now,
+        checkedForPending: true
+      });
       return NextResponse.json({
         success: true,
         message: "No scheduled messages to process",
@@ -46,7 +104,10 @@ export async function GET(request: NextRequest) {
       });
     }
 
-    console.log(`[Process Scheduled] Found ${scheduledMessages.length} scheduled messages to process`);
+    console.log(`[Process Scheduled] Found ${scheduledMessages.length} scheduled message(s) to process`, {
+      messageIds: scheduledMessages.map(m => m.id),
+      scheduledFor: scheduledMessages.map(m => m.scheduled_for)
+    });
 
     const results = {
       processed: 0,
@@ -297,7 +358,11 @@ export async function GET(request: NextRequest) {
       }
     });
   } catch (error: any) {
-    console.error("Error in process scheduled messages route:", error);
+    console.error("[Process Scheduled] Fatal error in process scheduled messages route:", {
+      error: error.message,
+      stack: error.stack,
+      name: error.name
+    });
     return NextResponse.json(
       { error: "Internal server error", details: error.message },
       { status: 500 }

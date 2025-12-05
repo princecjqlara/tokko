@@ -624,12 +624,14 @@ export default function BulkMessagePage() {
                                     break;
                                 
                                 case "complete":
+                                    // Update contacts count accurately from the final sync result
+                                    const finalTotal = Math.max(data.totalContacts || 0, contacts.length);
                                     setFetchingProgress(prev => ({
                                         ...prev,
                                         isFetching: false,
                                         message: data.message || `Sync completed! ${data.newContactsCount || 0} new contacts found. Auto-fetching enabled for new messages.`,
-                                        // NEVER decrease totalContacts - always use maximum of all sources
-                                        totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length)
+                                        // Use the accurate total from sync completion
+                                        totalContacts: finalTotal
                                     }));
                                     setIsLoading(false);
                                     isFetchingRef.current = false;
@@ -637,6 +639,26 @@ export default function BulkMessagePage() {
                                     abortControllerRef.current = null;
                                     // Keep hasFetchedRef as true since we completed successfully
                                     console.log(`✅ [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
+                                    // Trigger immediate check for new contacts after sync completes
+                                    setTimeout(() => {
+                                        if (!isFetchingRef.current && !fetchingProgress.isFetching) {
+                                            console.log("[Frontend] 🔄 Auto-checking for new contacts after sync...");
+                                            fetch("/api/facebook/contacts/background").then(response => {
+                                                if (response.ok) {
+                                                    return response.json().then((jobData: any) => {
+                                                        const job = jobData.job;
+                                                        if (job && job.status === "pending" && !isFetchingRef.current) {
+                                                            console.log("[Frontend] 🚀 New contacts detected, starting auto-fetch...");
+                                                            hasFetchedRef.current = false;
+                                                            fetchContactsRealtime();
+                                                        }
+                                                    });
+                                                }
+                                            }).catch(err => {
+                                                console.error("[Frontend] Error checking for new contacts:", err);
+                                            });
+                                        }
+                                    }, 1000); // Wait 1 second after sync completes before first check
                                     break;
                                 
                                 case "error":
@@ -1101,45 +1123,98 @@ export default function BulkMessagePage() {
 
     // Poll for new contacts and auto-fetch when new messages arrive
     // This runs continuously after initial sync to catch new messages immediately
+    // Polls every 3 seconds after sync completes (as requested)
     useEffect(() => {
         if (status !== "authenticated" || !session) return;
-
+        
+        let pollCount = 0;
+        let lastJobStatus: string | null = null;
+        
+        // Always set up polling - it will check hasFetchedRef inside to determine if it should run
+        // This ensures polling starts automatically when sync completes
         let pollInterval = setInterval(async () => {
             try {
-                // Only check if we're not currently fetching
+                pollCount++;
+                
+                // Only check if we've completed a sync and we're not currently fetching
+                // But allow polling even if initial sync hasn't completed (for debugging)
                 if (isFetchingRef.current || fetchingProgress.isFetching) {
+                    if (pollCount % 10 === 0) { // Log every 30 seconds when blocked
+                        console.log("[Frontend] Polling blocked - fetch in progress", {
+                            isFetchingRef: isFetchingRef.current,
+                            isFetching: fetchingProgress.isFetching
+                        });
+                    }
                     return;
                 }
 
-                // Check for pending fetch jobs (triggered by webhooks)
+                // Check for pending fetch jobs (triggered by webhooks or new messages)
                 const jobResponse = await fetch("/api/facebook/contacts/background");
                 if (jobResponse.ok) {
                     const jobData = await jobResponse.json();
                     const job = jobData.job;
+                    const currentStatus = job?.status || "none";
+                    
+                    // Log status changes for debugging
+                    if (currentStatus !== lastJobStatus) {
+                        console.log(`[Frontend] Job status changed: ${lastJobStatus} → ${currentStatus}`, {
+                            jobId: job?.id,
+                            message: job?.message,
+                            isPaused: job?.is_paused
+                        });
+                        lastJobStatus = currentStatus;
+                    }
                     
                     // If there's a pending job triggered by webhook, start fetching immediately
                     if (job && job.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
-                        console.log("[Frontend] 🚀 New message detected via webhook, starting immediate auto-fetch...");
+                        console.log("[Frontend] 🚀 New message detected, starting immediate auto-fetch...", {
+                            jobId: job.id,
+                            message: job.message,
+                            pageName: job.current_page_name
+                        });
                         // Reset refs to allow fetch
                         hasFetchedRef.current = false;
-                        fetchContactsRealtime();
+                        const fetchFn = fetchContactsRealtimeRef.current || fetchContactsRealtime;
+                        if (fetchFn) {
+                            fetchFn();
+                        } else {
+                            console.error("[Frontend] fetchContactsRealtime function not available!");
+                        }
                     } else if (job && job.status === "running" && job.is_paused) {
                         // Resume paused job if needed
-                        console.log("[Frontend] Resuming paused fetch job...");
+                        console.log("[Frontend] Resuming paused fetch job...", { jobId: job.id });
                         await fetch("/api/facebook/contacts/pause", {
                             method: "POST",
                             headers: { "Content-Type": "application/json" },
                             body: JSON.stringify({ isPaused: false }),
                         });
+                    } else if (pollCount % 20 === 0) {
+                        // Log polling status every 60 seconds (20 * 3 seconds) for debugging
+                        console.log("[Frontend] Polling active", {
+                            hasFetched: hasFetchedRef.current,
+                            jobStatus: currentStatus,
+                            pollCount
+                        });
                     }
+                } else {
+                    const errorText = await jobResponse.text();
+                    console.error("[Frontend] Error checking for jobs:", {
+                        status: jobResponse.status,
+                        error: errorText
+                    });
                 }
             } catch (error) {
-                console.error("Error checking for new messages:", error);
+                console.error("[Frontend] Error checking for new messages:", error);
             }
-        }, 10000); // Poll every 10 seconds (reduced to avoid excessive requests during fetch)
+        }, 3000); // Poll every 3 seconds after sync completes (as requested)
 
-        return () => clearInterval(pollInterval);
-    }, [status, session, fetchingProgress.isFetching, fetchContactsRealtime]);
+        console.log("[Frontend] Auto-fetch polling started - will check for new messages every 3 seconds");
+
+        return () => {
+            clearInterval(pollInterval);
+            console.log("[Frontend] Auto-fetch polling stopped");
+        };
+    }, [status, session, fetchingProgress.isFetching]);
 
     // All pages are automatically connected - no modal needed
 
@@ -1150,16 +1225,21 @@ export default function BulkMessagePage() {
 
     // Computed total contacts - use actual contacts length when not fetching
     // Only use fetchingProgress.totalContacts during active fetching
+    // Always show the most accurate count available
     const displayTotalContacts = useMemo(() => {
-        // If we're actively fetching, show the progress count
+        // If we're actively fetching, show the progress count (which is more accurate during sync)
         if (fetchingProgress.isFetching) {
             return Math.max(
                 fetchingProgress.totalContacts || 0,
                 contacts.length || 0
             );
         }
-        // When not fetching, always use the actual contacts array length
-        return contacts.length || 0;
+        // When not fetching, use the maximum of contacts array length and stored total
+        // This ensures accuracy even if contacts array hasn't fully loaded yet
+        return Math.max(
+            contacts.length || 0,
+            fetchingProgress.totalContacts || 0
+        );
     }, [fetchingProgress.totalContacts, fetchingProgress.isFetching, contacts.length]);
 
     // Filter contacts - show contacts from all connected pages by default, or filter by selected page

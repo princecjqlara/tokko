@@ -246,3 +246,155 @@ export async function GET(request: NextRequest) {
   }
 }
 
+// DELETE endpoint to delete user pages
+export async function DELETE(request: NextRequest) {
+  try {
+    const session = await getServerSession(authOptions);
+    
+    if (!session || !(session as any).accessToken) {
+      return NextResponse.json(
+        { error: "Unauthorized" },
+        { status: 401 }
+      );
+    }
+
+    const userId = (session.user as any).id;
+    const body = await request.json();
+    const { pageIds } = body;
+
+    if (!pageIds || !Array.isArray(pageIds) || pageIds.length === 0) {
+      return NextResponse.json(
+        { error: "No page IDs provided" },
+        { status: 400 }
+      );
+    }
+
+    console.log(`Attempting to delete ${pageIds.length} pages for user ${userId}`);
+
+    let deletedPages: string[] = [];
+    let deletedContacts: number = 0;
+    let errors: any[] = [];
+
+    for (const pageId of pageIds) {
+      try {
+        // Step 1: Delete all contacts for this user and page
+        const { data: deletedContactsData, error: contactsDeleteError } = await supabaseServer
+          .from("contacts")
+          .delete()
+          .eq("user_id", userId)
+          .eq("page_id", pageId)
+          .select();
+
+        if (contactsDeleteError) {
+          console.error(`Error deleting contacts for page ${pageId}:`, contactsDeleteError);
+          errors.push({
+            pageId,
+            step: "delete_contacts",
+            error: contactsDeleteError.message
+          });
+          continue;
+        }
+
+        const contactsCount = deletedContactsData?.length || 0;
+        deletedContacts += contactsCount;
+        console.log(`Deleted ${contactsCount} contacts for page ${pageId}`);
+
+        // Step 2: Delete the user_pages relationship
+        const { error: userPagesDeleteError } = await supabaseServer
+          .from("user_pages")
+          .delete()
+          .eq("user_id", userId)
+          .eq("page_id", pageId);
+
+        if (userPagesDeleteError) {
+          console.error(`Error deleting user_pages for page ${pageId}:`, userPagesDeleteError);
+          errors.push({
+            pageId,
+            step: "delete_user_pages",
+            error: userPagesDeleteError.message
+          });
+          continue;
+        }
+
+        console.log(`✅ Deleted user_pages relationship for page ${pageId}`);
+
+        // Step 3: Check if this page has any contacts from ANY other user
+        const { count: totalPageContacts, error: totalCountError } = await supabaseServer
+          .from("contacts")
+          .select("*", { count: "exact", head: true })
+          .eq("page_id", pageId);
+
+        if (totalCountError) {
+          console.error(`Error checking total contacts for page ${pageId}:`, totalCountError);
+          errors.push({
+            pageId,
+            step: "check_remaining_contacts",
+            error: totalCountError.message
+          });
+          continue;
+        }
+
+        // Step 4: If no contacts exist for this page from any user, delete the page
+        if (totalPageContacts === 0) {
+          console.log(`No contacts remaining for page ${pageId} from any user, deleting page`);
+          
+          const { error: pageDeleteError } = await supabaseServer
+            .from("facebook_pages")
+            .delete()
+            .eq("page_id", pageId);
+
+          if (pageDeleteError) {
+            console.error(`Error deleting page ${pageId}:`, pageDeleteError);
+            errors.push({
+              pageId,
+              step: "delete_page",
+              error: pageDeleteError.message
+            });
+          } else {
+            deletedPages.push(pageId);
+            console.log(`✅ Deleted page ${pageId}`);
+          }
+        } else {
+          console.log(`Page ${pageId} still has ${totalPageContacts} contacts from other users, keeping page`);
+        }
+      } catch (error: any) {
+        console.error(`Error processing page ${pageId}:`, error);
+        errors.push({
+          pageId,
+          step: "unknown",
+          error: error.message
+        });
+      }
+    }
+
+    if (errors.length > 0 && errors.length === pageIds.length) {
+      // All pages failed
+      return NextResponse.json(
+        { 
+          error: "Failed to delete pages",
+          errors: errors
+        },
+        { status: 500 }
+      );
+    }
+
+    const successCount = pageIds.length - errors.length;
+    console.log(`Successfully processed ${successCount} pages for user ${userId}`);
+
+    return NextResponse.json({ 
+      success: true,
+      deletedPages: deletedPages.length,
+      deletedContacts,
+      requestedCount: pageIds.length,
+      deletedPageIds: deletedPages,
+      errors: errors.length > 0 ? errors : undefined
+    });
+  } catch (error: any) {
+    console.error("Error deleting pages:", error);
+    return NextResponse.json(
+      { error: "Internal server error", details: error.message },
+      { status: 500 }
+    );
+  }
+}
+
