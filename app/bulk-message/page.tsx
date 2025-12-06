@@ -1792,6 +1792,21 @@ export default function BulkMessagePage() {
                 throw new Error(errorMessage);
             }
 
+            // Debug logging
+            console.log("[Frontend] Send response:", {
+                ok: response.ok,
+                success: data.success,
+                hasResults: !!data.results,
+                backgroundJob: data.results?.backgroundJob,
+                scheduled: data.results?.scheduled,
+                partial: data.results?.partial,
+                sent: data.results?.sent,
+                failed: data.results?.failed,
+                total: data.results?.total,
+                error: data.error,
+                details: data.details
+            });
+
             if (response.ok && data.success) {
                 if (data.results?.scheduled) {
                     setScheduledNotice({
@@ -1806,7 +1821,14 @@ export default function BulkMessagePage() {
                     // Partial results due to timeout
                     alert(`${data.results.message}\n\nSent: ${data.results.sent}\nFailed: ${data.results.failed}\nRemaining: ${data.results.total - data.results.sent - data.results.failed}`);
                 } else {
-                    alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
+                    // Only show success message if messages were actually sent
+                    if (data.results?.sent > 0 || data.results?.failed > 0) {
+                        alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
+                    } else {
+                        // If sent is 0 and no errors, something might be wrong
+                        console.warn("[Frontend] Received success response but 0 messages sent:", data);
+                        alert(`Message sending initiated, but no messages were sent yet. This may be a background job. Please check the job status.`);
+                    }
                 }
             } else {
                 // Handle error response

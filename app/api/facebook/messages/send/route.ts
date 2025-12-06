@@ -151,54 +151,80 @@ export async function POST(request: NextRequest) {
     if (!scheduleDate && contacts.length > BACKGROUND_JOB_THRESHOLD) {
       console.log(`[Send Message API] Large batch detected (${contacts.length} contacts), creating background job`);
       
-      const { data: sendJob, error: jobError } = await supabaseServer
-        .from("send_jobs")
-        .insert({
-          user_id: userId,
-          contact_ids: contactIds,
-          message: message.trim(),
-          attachment: attachment || null,
-          status: "pending",
-          total_count: contacts.length
-        })
-        .select()
-        .single();
+      try {
+        const { data: sendJob, error: jobError } = await supabaseServer
+          .from("send_jobs")
+          .insert({
+            user_id: userId,
+            contact_ids: contactIds,
+            message: message.trim(),
+            attachment: attachment || null,
+            status: "pending",
+            total_count: contacts.length
+          })
+          .select()
+          .single();
 
-      if (jobError) {
-        console.error("Error creating send job:", jobError);
-        // Fall through to try sending directly (may timeout but better than failing completely)
-        console.log("[Send Message API] Failed to create job, attempting direct send (may timeout)");
-      } else {
-        // Trigger background processing asynchronously (don't wait for it)
-        // Pass the access token so the job processor can fetch pages if needed
-        fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/facebook/messages/process-send-job`, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "Authorization": `Bearer ${(session as any).accessToken}`,
-          },
-          body: JSON.stringify({ 
-            jobId: sendJob.id,
-            accessToken: (session as any).accessToken 
-          }),
-        }).catch(err => {
-          console.error("[Send Message API] Failed to trigger background job:", err);
-          // Job will be picked up by cron or manual trigger
-        });
-
-        return NextResponse.json({
-          success: true,
-          results: {
-            total: contacts.length,
-            sent: 0,
-            failed: 0,
-            errors: [],
-            scheduled: false,
-            backgroundJob: true,
-            jobId: sendJob.id,
-            message: `Large batch detected. Processing ${contacts.length} messages in the background. Check job status for progress.`
+        if (jobError) {
+          console.error("[Send Message API] Error creating send job:", jobError);
+          console.error("[Send Message API] Job error details:", JSON.stringify(jobError, null, 2));
+          // Check if it's a table not found error
+          if (jobError.message?.includes("relation") && jobError.message?.includes("does not exist")) {
+            console.error("[Send Message API] send_jobs table does not exist! Please run the migration.");
+            return NextResponse.json({
+              success: false,
+              error: "Database migration required",
+              details: "The send_jobs table has not been created. Please run the migration from supabase_migrations/create_send_jobs_table.sql",
+              results: {
+                total: contacts.length,
+                sent: 0,
+                failed: 0,
+                errors: []
+              }
+            }, { status: 500 });
           }
-        });
+          // Fall through to try sending directly (may timeout but better than failing completely)
+          console.log("[Send Message API] Failed to create job, attempting direct send (may timeout)");
+        } else if (sendJob) {
+          console.log(`[Send Message API] Background job created successfully: ${sendJob.id}`);
+          
+          // Trigger background processing asynchronously (don't wait for it)
+          // Pass the access token so the job processor can fetch pages if needed
+          fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/facebook/messages/process-send-job`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${(session as any).accessToken}`,
+            },
+            body: JSON.stringify({ 
+              jobId: sendJob.id,
+              accessToken: (session as any).accessToken 
+            }),
+          }).catch(err => {
+            console.error("[Send Message API] Failed to trigger background job:", err);
+            // Job will be picked up by cron or manual trigger
+          });
+
+          return NextResponse.json({
+            success: true,
+            results: {
+              total: contacts.length,
+              sent: 0,
+              failed: 0,
+              errors: [],
+              scheduled: false,
+              backgroundJob: true,
+              jobId: sendJob.id,
+              message: `Large batch detected. Processing ${contacts.length} messages in the background. Check job status for progress.`
+            }
+          });
+        } else {
+          console.error("[Send Message API] Job creation returned no data and no error");
+          // Fall through to direct send
+        }
+      } catch (error: any) {
+        console.error("[Send Message API] Exception creating send job:", error);
+        // Fall through to try sending directly
       }
     }
 
