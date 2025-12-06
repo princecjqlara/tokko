@@ -231,7 +231,7 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
   for (const contact of contacts) {
     // Skip if we've already sent to this contact in this job run
     if (localSentIds.has(contact.contact_id)) {
-      console.log(`⏭️ Skipping duplicate contact: ${contact.contact_name} (${contact.contact_id}) - already sent in this job`);
+      console.log(`⏭️ [sendMessagesForPage] Skipping duplicate contact: ${contact.contact_name} (${contact.contact_id}) - already sent in this job`);
       continue;
     }
     
@@ -239,12 +239,16 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
 
     if (sendResult.success) {
       success++;
-      localSentIds.add(contact.contact_id); // Mark as sent
-      console.log(`✅ Sent message to ${contact.contact_name} (${contact.contact_id})`);
+      localSentIds.add(contact.contact_id); // Mark as sent IMMEDIATELY
+      // Also update the passed Set immediately
+      if (sentContactIds) {
+        sentContactIds.add(contact.contact_id);
+      }
+      console.log(`✅ [sendMessagesForPage] Sent message to ${contact.contact_name} (${contact.contact_id}) - total sent in this run: ${localSentIds.size}`);
     } else {
       failed++;
       const errorMsg = sendResult.error || "Unknown error";
-      console.error(`❌ Failed to send message to ${contact.contact_name}:`, errorMsg);
+      console.error(`❌ [sendMessagesForPage] Failed to send message to ${contact.contact_name} (${contact.contact_id}):`, errorMsg);
       errors.push({
         contact: contact.contact_name,
         page: contact.page_name,
@@ -254,6 +258,12 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
     }
 
     await sleep(MESSAGE_SEND_THROTTLE_MS);
+  }
+  
+  // Update the passed Set so caller can track sent contacts across pages
+  // (Already done above, but ensure all are synced)
+  if (sentContactIds) {
+    localSentIds.forEach(id => sentContactIds.add(id));
   }
   
   // Update the passed Set so caller can track sent contacts across pages
@@ -342,11 +352,29 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       }
     }
     
+    console.log(`[Process Send Job] Job ${sendJob.id} resume check:`, {
+      status: sendJob.status,
+      alreadySentCount,
+      alreadyFailedCount,
+      alreadyProcessed,
+      sentContactIdsFromMetadata: sentContactIdsSet.size,
+      totalContacts: deduplicatedContacts.length,
+      totalExpected: sendJob.total_count
+    });
+    
     // If resuming and we have sent contacts, filter them out
     let contactsToProcess = deduplicatedContacts;
     if (sentContactIdsSet.size > 0) {
+      const beforeFilter = contactsToProcess.length;
       contactsToProcess = deduplicatedContacts.filter(c => !sentContactIdsSet.has(c.contact_id));
-      console.log(`[Process Send Job] Job ${sendJob.id}: Resuming - skipping ${sentContactIdsSet.size} already sent contacts, processing ${contactsToProcess.length} remaining`);
+      console.log(`[Process Send Job] Job ${sendJob.id}: Resuming - filtered out ${beforeFilter - contactsToProcess.length} already sent contacts (${sentContactIdsSet.size} in metadata), processing ${contactsToProcess.length} remaining`);
+      
+      // Double-check: verify we're not processing contacts that were already sent
+      const duplicateCheck = contactsToProcess.filter(c => sentContactIdsSet.has(c.contact_id));
+      if (duplicateCheck.length > 0) {
+        console.warn(`[Process Send Job] WARNING: Found ${duplicateCheck.length} contacts that should have been filtered out!`);
+        contactsToProcess = contactsToProcess.filter(c => !sentContactIdsSet.has(c.contact_id));
+      }
     } else {
       console.log(`[Process Send Job] Job ${sendJob.id}: Starting fresh - processing ${contactsToProcess.length} contacts`);
     }
@@ -417,12 +445,15 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       // Update progress after each page (important for resume)
       // Store sent contact IDs in errors array as metadata for resume
       const sentContactIdsArray = Array.from(sentContactIds);
+      // Remove any existing metadata entries and add fresh one
+      const actualErrors = messageErrors.filter((e: any) => !e._metadata);
       const errorsWithMetadata = [
-        ...messageErrors,
+        ...actualErrors,
         { 
           _metadata: { 
             sent_contact_ids: sentContactIdsArray,
-            last_updated: new Date().toISOString()
+            last_updated: new Date().toISOString(),
+            total_sent: sentContactIdsArray.length
           }
         }
       ];
@@ -437,42 +468,95 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
         })
         .eq("id", sendJob.id);
         
-      console.log(`[Process Send Job] Progress: ${messageSuccess} sent, ${messageFailed} failed (${messageSuccess + messageFailed}/${deduplicatedContacts.length} total)`);
+      console.log(`[Process Send Job] Progress: ${messageSuccess} sent, ${messageFailed} failed (${messageSuccess + messageFailed}/${sendJob.total_count || deduplicatedContacts.length} total), sent IDs tracked: ${sentContactIdsArray.length}`);
     }
 
     // Final status update
     // Check if we processed all contacts
     const totalProcessed = messageSuccess + messageFailed;
-    const totalExpected = deduplicatedContacts.length; // Total expected from original contact list
+    // totalExpected should be the original total_count from the job
+    const totalExpected = sendJob.total_count || deduplicatedContacts.length;
+    // Remaining contacts to process = total expected - already processed before this run - newly processed in this run
+    const remainingContacts = totalExpected - totalProcessed;
+    
+    console.log(`[Process Send Job] Job ${sendJob.id} progress check:`, {
+      totalExpected,
+      alreadyProcessedBeforeRun: alreadyProcessed,
+      newlyProcessedThisRun: totalProcessed - alreadyProcessed,
+      totalProcessed,
+      remainingContacts,
+      contactsToProcessCount: contactsToProcess.length,
+      sentContactIdsCount: sentContactIds.size
+    });
     
     let finalStatus = "completed";
-    if (totalProcessed < totalExpected) {
+    if (remainingContacts > 0 && contactsToProcess.length > 0) {
       // Not all contacts were processed - keep as "running" so cron can resume
       finalStatus = "running";
-      messageErrors.push({ 
-        error: `Incomplete: Processed ${totalProcessed} of ${totalExpected} contacts. Job will resume on next cron run.`,
-        remaining: totalExpected - totalProcessed
-      });
-      console.log(`⏸️ Job ${sendJob.id} incomplete: ${totalProcessed}/${totalExpected} processed. Will resume on next cron run.`);
-    } else if (messageSuccess === 0 && messageFailed > 0) {
+      const errorsWithMetadata = [
+        ...messageErrors,
+        { 
+          error: `Incomplete: Processed ${totalProcessed} of ${totalExpected} contacts. ${remainingContacts} remaining. Job will resume on next cron run.`,
+          remaining: remainingContacts,
+          _metadata: { 
+            sent_contact_ids: Array.from(sentContactIds),
+            last_updated: new Date().toISOString()
+          }
+        }
+      ];
+      console.log(`⏸️ Job ${sendJob.id} incomplete: ${totalProcessed}/${totalExpected} processed. ${remainingContacts} remaining. Will resume on next cron run.`);
+      
+      await supabaseServer
+        .from("send_jobs")
+        .update({
+          status: finalStatus,
+          sent_count: messageSuccess,
+          failed_count: messageFailed,
+          errors: errorsWithMetadata,
+          completed_at: null,
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", sendJob.id);
+    } else if (messageSuccess === 0 && messageFailed > 0 && totalProcessed >= totalExpected) {
+      // All contacts processed but all failed
       finalStatus = "failed";
+      await supabaseServer
+        .from("send_jobs")
+        .update({
+          status: finalStatus,
+          sent_count: messageSuccess,
+          failed_count: messageFailed,
+          errors: messageErrors,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", sendJob.id);
     } else {
       // All contacts processed successfully
       finalStatus = "completed";
+      const errorsWithMetadata = [
+        ...messageErrors,
+        { 
+          _metadata: { 
+            sent_contact_ids: Array.from(sentContactIds),
+            last_updated: new Date().toISOString()
+          }
+        }
+      ];
       console.log(`✅ Job ${sendJob.id} completed: ${messageSuccess} sent, ${messageFailed} failed`);
+      
+      await supabaseServer
+        .from("send_jobs")
+        .update({
+          status: finalStatus,
+          sent_count: messageSuccess,
+          failed_count: messageFailed,
+          errors: errorsWithMetadata,
+          completed_at: new Date().toISOString(),
+          updated_at: new Date().toISOString()
+        })
+        .eq("id", sendJob.id);
     }
-
-    await supabaseServer
-      .from("send_jobs")
-      .update({
-        status: finalStatus,
-        sent_count: messageSuccess,
-        failed_count: messageFailed,
-        errors: messageErrors,
-        completed_at: finalStatus === "completed" ? new Date().toISOString() : null,
-        updated_at: new Date().toISOString()
-      })
-      .eq("id", sendJob.id);
 
     console.log(`✅ Processed send job ${sendJob.id}: ${messageSuccess} sent, ${messageFailed} failed (${totalProcessed}/${totalExpected} total), status: ${finalStatus}`);
   } catch (error: any) {
