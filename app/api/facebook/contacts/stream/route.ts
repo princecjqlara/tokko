@@ -866,17 +866,10 @@ export async function GET(request: NextRequest) {
 
               console.log(`📄 [Stream Route] Starting to fetch conversations for page: ${page.name} (${page.id})`);
 
-              // Fetch conversations - only get updated ones if we have a last update time
-              let conversationsUrl: string;
-              if (lastPageUpdate) {
-                // Only fetch conversations updated since last fetch (with 1 minute buffer)
-                const sinceTime = Math.floor((lastPageUpdate.getTime() - 60000) / 1000); // 1 minute before last update
-                conversationsUrl = `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100&since=${sinceTime}`;
-                console.log(`   🔄 Fetching conversations updated since ${new Date(sinceTime * 1000).toISOString()}`);
-              } else {
-                // Fetch all conversations if no previous data
-                conversationsUrl = `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100`;
-              }
+              // Always fetch ALL conversations - don't filter by time
+              // This ensures we get all contacts even if they had old conversations
+              const conversationsUrl = `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100`;
+              console.log(`   🔄 Fetching ALL conversations for ${page.name}`);
 
               // Fetch conversations with pagination
               let allConversations: any[] = [];
