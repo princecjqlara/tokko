@@ -2214,7 +2214,7 @@ export default function BulkMessagePage() {
                     <div className="flex items-center justify-between px-2 h-10">
                         <button
                             onClick={toggleSelectPage}
-                            disabled={isLoading}
+                            disabled={paginatedContacts.length === 0}
                             className="flex items-center gap-3 text-sm font-medium text-zinc-400 hover:text-zinc-200 transition-colors group disabled:opacity-50 disabled:cursor-not-allowed"
                         >
                             <div
