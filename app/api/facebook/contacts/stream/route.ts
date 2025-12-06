@@ -983,6 +983,7 @@ export async function GET(request: NextRequest) {
               let pageContacts = 0;
               const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates within this page
               const processedContactKeys = new Set<string>(); // Track contacts already processed in this page
+              const pendingContacts: any[] = []; // Small batch buffer - save every 20 contacts
 
               console.log(`   🔄 [Stream Route] Starting conversation processing loop for ${page.name} (${allConversations.length} conversations)`);
 
@@ -990,6 +991,7 @@ export async function GET(request: NextRequest) {
 
               // Process conversations for progress tracking
               const BATCH_SIZE = 50;
+              const SMALL_BATCH_SAVE_SIZE = 20; // Save every 20 contacts - balance between reliability and API efficiency
               const PROGRESS_UPDATE_INTERVAL = 10; // Update every 10 conversations for real-time feel
               let processedCount = 0;
               const processingStartTime = Date.now();
@@ -1141,46 +1143,52 @@ export async function GET(request: NextRequest) {
                       }
                       processedContactKeys.add(contactKey);
 
-                      // IMMEDIATE SAVE TO DATABASE - No batching, just save directly
-                      try {
-                        const contactToSave = {
-                          contact_id: contactData.id,
-                          page_id: contactData.pageId,
-                          user_id: userId,
-                          contact_name: contactData.name,
-                          page_name: contactData.page,
-                          last_message: contactData.lastMessage || null,
-                          last_message_time: contactData.lastMessageTime || null,
-                          last_contact_message_date: contactData.lastContactMessageDate || null,
-                          updated_at: contactData.updatedTime || new Date().toISOString(),
-                          tags: contactData.tags || [],
-                          role: contactData.role || "",
-                          avatar: contactData.avatar,
-                          date: contactData.date || null,
-                        };
+                      // Add to pending batch
+                      const contactToSave = {
+                        contact_id: contactData.id,
+                        page_id: contactData.pageId,
+                        user_id: userId,
+                        contact_name: contactData.name,
+                        page_name: contactData.page,
+                        last_message: contactData.lastMessage || null,
+                        last_message_time: contactData.lastMessageTime || null,
+                        last_contact_message_date: contactData.lastContactMessageDate || null,
+                        updated_at: contactData.updatedTime || new Date().toISOString(),
+                        tags: contactData.tags || [],
+                        role: contactData.role || "",
+                        avatar: contactData.avatar,
+                        date: contactData.date || null,
+                      };
+                      pendingContacts.push({ contactData, contactToSave, contactKey });
 
-                        const { error: upsertError } = await supabaseServer
-                          .from("contacts")
-                          .upsert(contactToSave, {
-                            onConflict: "contact_id,page_id,user_id"
-                          });
+                      // Save in small batches of 20 contacts - balance between reliability and API efficiency
+                      if (pendingContacts.length >= SMALL_BATCH_SAVE_SIZE) {
+                        const batchToSave = pendingContacts.splice(0, SMALL_BATCH_SAVE_SIZE);
+                        try {
+                          const { error: upsertError } = await supabaseServer
+                            .from("contacts")
+                            .upsert(batchToSave.map(c => c.contactToSave), {
+                              onConflict: "contact_id,page_id,user_id"
+                            });
 
-                        if (upsertError) {
-                          console.error(`❌ [Stream Route] Error saving contact ${contactData.id}:`, upsertError.message);
-                        } else {
-                          // Only count and notify if save was successful
-                          if (!globalSeenContactKeys.has(contactKey)) {
-                            globalSeenContactKeys.add(contactKey);
-                            allContacts.push(contactData);
-                            pageContacts++;
+                          if (upsertError) {
+                            console.error(`❌ [Stream Route] Batch save error (${batchToSave.length} contacts):`, upsertError.message);
+                          } else {
+                            // Mark as saved successfully
+                            for (const item of batchToSave) {
+                              if (!globalSeenContactKeys.has(item.contactKey)) {
+                                globalSeenContactKeys.add(item.contactKey);
+                                allContacts.push(item.contactData);
+                                pageContacts++;
+                              }
+                            }
+                            console.log(`   💾 [Stream Route] Saved batch of ${batchToSave.length} contacts (${allContacts.length} total)`);
                           }
+                        } catch (saveError: any) {
+                          console.error(`❌ [Stream Route] Batch save exception:`, saveError.message);
                         }
-                      } catch (saveError: any) {
-                        console.error(`❌ [Stream Route] Exception saving contact ${contactData.id}:`, saveError.message);
-                      }
 
-                      // Send progress update every 10 contacts
-                      if (allContacts.length % 10 === 0) {
+                        // Send progress update after each batch save
                         const currentTotal = existingContactCount + allContacts.length;
                         lastSentContactCount = Math.max(currentTotal, lastSentContactCount);
                         send({
@@ -1255,8 +1263,36 @@ export async function GET(request: NextRequest) {
                 }
               } // End for loop
 
-              // No batch save needed - contacts were saved directly
-              console.log(`   ✅ [Stream Route] Finished processing ${allConversations.length} conversations for ${page.name}. ${pageContacts} new contacts saved directly.`);
+              // Save any remaining pending contacts
+              if (pendingContacts.length > 0) {
+                const remainingBatch = pendingContacts.splice(0);
+                console.log(`   💾 [Stream Route] Saving final batch of ${remainingBatch.length} contacts for ${page.name}...`);
+                try {
+                  const { error: finalUpsertError } = await supabaseServer
+                    .from("contacts")
+                    .upsert(remainingBatch.map(c => c.contactToSave), {
+                      onConflict: "contact_id,page_id,user_id"
+                    });
+
+                  if (finalUpsertError) {
+                    console.error(`❌ [Stream Route] Final batch save error:`, finalUpsertError.message);
+                  } else {
+                    // Mark as saved successfully
+                    for (const item of remainingBatch) {
+                      if (!globalSeenContactKeys.has(item.contactKey)) {
+                        globalSeenContactKeys.add(item.contactKey);
+                        allContacts.push(item.contactData);
+                        pageContacts++;
+                      }
+                    }
+                    console.log(`   ✅ [Stream Route] Saved final batch of ${remainingBatch.length} contacts (${allContacts.length} total)`);
+                  }
+                } catch (saveError: any) {
+                  console.error(`❌ [Stream Route] Final batch save exception:`, saveError.message);
+                }
+              }
+
+              console.log(`   ✅ [Stream Route] Finished processing ${allConversations.length} conversations for ${page.name}. ${pageContacts} new contacts saved.`);
 
               const pageProcessingTime = ((Date.now() - pageProcessingStartTime) / 1000).toFixed(1);
               if (pageContacts > 0) {
