@@ -521,10 +521,14 @@ async function triggerContactFetch(pageId: string, contactId: string) {
             console.log(`[Webhook] Re-triggering fetch for pending job ${existingJob.id} for user ${userId}`);
             
             // Get current contact count
-            const { count } = await supabaseServer
+            const { count, error: countError } = await supabaseServer
               .from("contacts")
               .select("*", { count: "exact", head: true })
               .eq("user_id", userId);
+            
+            if (countError) {
+              console.error(`[Webhook] Error getting contact count for user ${userId} (retry):`, countError);
+            }
             
             const { error: updateError } = await supabaseServer
               .from("fetch_jobs")
