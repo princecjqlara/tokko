@@ -866,14 +866,43 @@ export async function GET(request: NextRequest) {
 
               console.log(`📄 [Stream Route] Starting to fetch conversations for page: ${page.name} (${page.id})`);
 
-              // Always fetch ALL conversations - don't filter by time
-              // This ensures we get all contacts even if they had old conversations
-              const conversationsUrl = `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100`;
-              console.log(`   🔄 Fetching ALL conversations for ${page.name}`);
+              // Check for existing cursor to resume from
+              let resumeFromCursor: string | null = null;
+              let previousContactsSynced = 0;
+              let previousConversationsProcessed = 0;
+
+              try {
+                const { data: existingCursor, error: cursorError } = await supabaseServer
+                  .from("sync_cursors")
+                  .select("cursor_url, contacts_synced, conversations_processed, status")
+                  .eq("user_id", userId)
+                  .eq("page_id", page.id)
+                  .single();
+
+                if (!cursorError && existingCursor && existingCursor.status === "in_progress" && existingCursor.cursor_url) {
+                  resumeFromCursor = existingCursor.cursor_url;
+                  previousContactsSynced = existingCursor.contacts_synced || 0;
+                  previousConversationsProcessed = existingCursor.conversations_processed || 0;
+                  console.log(`   🔄 [Stream Route] RESUMING from saved cursor! Already synced: ${previousContactsSynced} contacts, ${previousConversationsProcessed} conversations`);
+                  send({
+                    type: "status",
+                    message: `Resuming sync for ${page.name}... Already synced ${previousContactsSynced} contacts`,
+                    totalContacts: existingContactCount + previousContactsSynced
+                  });
+                }
+              } catch (cursorCheckError) {
+                console.log(`   📝 [Stream Route] No existing cursor found, starting fresh`);
+              }
+
+              // Use saved cursor or start fresh
+              const initialUrl = resumeFromCursor ||
+                `https://graph.facebook.com/v18.0/${page.id}/conversations?access_token=${page.access_token}&fields=participants,updated_time,messages.limit(10){from,message,created_time}&limit=100`;
+
+              console.log(`   🔄 ${resumeFromCursor ? 'Resuming from saved cursor' : 'Starting fresh'} for ${page.name}`);
 
               // Fetch conversations with pagination
               let allConversations: any[] = [];
-              let currentConversationsUrl: string | null = conversationsUrl;
+              let currentConversationsUrl: string | null = initialUrl;
               let paginationIterations = 0;
               const MAX_PAGINATION_ITERATIONS = 1000; // Safety limit to prevent infinite loops
               let lastConversationsUrl: string | null = null;
@@ -1020,13 +1049,35 @@ export async function GET(request: NextRequest) {
                     // Check if there are more pages
                     currentConversationsUrl = conversationsData.paging?.next || null;
 
+                    // IMPORTANT: Save cursor for resumption if we have more pages
+                    if (currentConversationsUrl) {
+                      try {
+                        await supabaseServer
+                          .from("sync_cursors")
+                          .upsert({
+                            user_id: userId,
+                            page_id: page.id,
+                            cursor_url: currentConversationsUrl,
+                            contacts_synced: allContacts.length,
+                            conversations_processed: allConversations.length,
+                            status: "in_progress",
+                            updated_at: new Date().toISOString()
+                          }, {
+                            onConflict: "user_id,page_id"
+                          });
+                        console.log(`   💾 [Stream Route] Saved cursor for resumption (${allContacts.length} contacts, ${allConversations.length} convos)`);
+                      } catch (cursorSaveError) {
+                        console.error(`   ⚠️ [Stream Route] Failed to save cursor:`, cursorSaveError);
+                      }
+                    }
+
                     // Send progress update every 100 conversations or when starting a new page
                     if (allConversations.length % 100 === 0 || paginationIterations === 1) {
                       send({
                         type: "page_conversations",
                         pageName: page.name,
                         conversationsCount: allConversations.length,
-                        message: `Fetched ${allConversations.length} conversations, found ${allContacts.length} contacts so far${currentConversationsUrl ? ', fetching more...' : ''}`
+                        message: `Synced ${allContacts.length} contacts from ${allConversations.length} conversations${currentConversationsUrl ? ', continuing...' : ' - complete!'}`
                       });
                     }
 
@@ -1078,6 +1129,51 @@ export async function GET(request: NextRequest) {
                 }
               }
 
+              // Save any remaining pending contacts before moving to next page
+              if (globalPendingContacts.length > 0) {
+                console.log(`   💾 [Stream Route] Saving final batch of ${globalPendingContacts.length} remaining contacts...`);
+                try {
+                  const { data: finalSaveData, error: finalSaveError } = await supabaseServer
+                    .from("contacts")
+                    .upsert(globalPendingContacts.map((c: any) => c.contactToSave), {
+                      onConflict: "contact_id,page_id,user_id"
+                    })
+                    .select('contact_id');
+
+                  if (finalSaveError) {
+                    console.error(`❌ [Stream Route] Error saving final batch:`, finalSaveError);
+                  } else {
+                    console.log(`   ✅ [Stream Route] Saved final batch of ${finalSaveData?.length || globalPendingContacts.length} contacts`);
+                  }
+                  globalPendingContacts = [];
+                } catch (finalErr) {
+                  console.error(`❌ [Stream Route] Exception saving final batch:`, finalErr);
+                }
+              }
+
+              // Mark cursor as completed if we finished all pages
+              if (!currentConversationsUrl) {
+                try {
+                  await supabaseServer
+                    .from("sync_cursors")
+                    .upsert({
+                      user_id: userId,
+                      page_id: page.id,
+                      cursor_url: null,
+                      contacts_synced: allContacts.length,
+                      conversations_processed: allConversations.length,
+                      status: "completed",
+                      completed_at: new Date().toISOString(),
+                      updated_at: new Date().toISOString()
+                    }, {
+                      onConflict: "user_id,page_id"
+                    });
+                  console.log(`   ✅ [Stream Route] Marked page ${page.name} sync as COMPLETED (${allContacts.length} contacts)`);
+                } catch (cursorCompleteError) {
+                  console.error(`   ⚠️ [Stream Route] Failed to mark cursor complete:`, cursorCompleteError);
+                }
+              }
+
               // Safety check if we hit pagination limit
               if (paginationIterations >= MAX_PAGINATION_ITERATIONS) {
                 console.warn(`⚠️ Hit pagination safety limit (${MAX_PAGINATION_ITERATIONS}) for page ${page.name}`);
@@ -1088,13 +1184,13 @@ export async function GET(request: NextRequest) {
                 });
               }
 
-              console.log(`   📊 [Stream Route] Page ${page.name}: Processing ${allConversations.length} total conversations`);
+              console.log(`   📊 [Stream Route] Page ${page.name}: Synced ${allContacts.length} contacts from ${allConversations.length} conversations`);
 
               send({
                 type: "page_conversations",
                 pageName: page.name,
                 conversationsCount: allConversations.length,
-                message: `Found ${allConversations.length} total conversations`
+                message: `✓ ${page.name}: Synced ${allContacts.length} contacts from ${allConversations.length} conversations`
               });
 
               // Log heartbeat
