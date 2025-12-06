@@ -928,6 +928,102 @@ export async function GET(request: NextRequest) {
 
                     console.log(`   ✅ Page ${page.name}: Fetched ${conversations.length} conversations (Total: ${allConversations.length})`);
 
+                    // IMPORTANT: Process contacts IMMEDIATELY after each batch of conversations
+                    // This ensures contacts are saved even if the sync is cancelled mid-way
+                    console.log(`   🔄 [Stream Route] Processing ${conversations.length} conversations immediately...`);
+
+                    for (const conversation of conversations) {
+                      // Extract contact from participants
+                      const participants = conversation.participants?.data || [];
+                      const contact = participants.find((p: any) => p.id !== page.id);
+
+                      if (contact) {
+                        const contactKey = `${contact.id}_${page.id}_${userId}`;
+
+                        // Skip if already processed
+                        if (globalSeenContactKeys.has(contactKey)) {
+                          continue;
+                        }
+
+                        // Get last message info
+                        const messages = conversation.messages?.data || [];
+                        const lastMessage = messages[0];
+                        const conversationDate = new Date(conversation.updated_time).toISOString().split('T')[0];
+
+                        // Build contact data
+                        const contactData = {
+                          id: contact.id,
+                          name: contact.name || contact.id || `User ${contact.id}`,
+                          page: page.name,
+                          pageId: page.id,
+                          lastMessage: lastMessage?.message || "",
+                          lastMessageTime: lastMessage?.created_time || conversation.updated_time,
+                          lastContactMessageDate: null,
+                          updatedTime: conversation.updated_time,
+                          tags: [],
+                          role: "",
+                          avatar: (contact.name || contact.id || "U").substring(0, 2).toUpperCase(),
+                          date: conversationDate
+                        };
+
+                        // Add to pending batch
+                        const contactToSave = {
+                          contact_id: contactData.id,
+                          page_id: contactData.pageId,
+                          user_id: userId,
+                          contact_name: contactData.name,
+                          page_name: contactData.page,
+                          last_message: contactData.lastMessage || null,
+                          last_message_time: contactData.lastMessageTime || null,
+                          last_contact_message_date: null,
+                          updated_at: contactData.updatedTime || new Date().toISOString(),
+                          tags: [],
+                          role: "",
+                          avatar: contactData.avatar,
+                          date: contactData.date || null,
+                        };
+
+                        globalPendingContacts.push({ contactData, contactToSave, contactKey });
+                        globalSeenContactKeys.add(contactKey);
+                        allContacts.push(contactData);
+
+                        console.log(`   📥 [Stream Route] Contact ${allContacts.length}: ${contactData.name} (Buffer: ${globalPendingContacts.length})`);
+
+                        // Save batch of 10 contacts immediately
+                        if (globalPendingContacts.length >= 10) {
+                          const batchToSave = globalPendingContacts.splice(0, 10);
+                          console.log(`   💾 [Stream Route] ====== SAVING BATCH OF ${batchToSave.length} CONTACTS ======`);
+
+                          try {
+                            const { data: savedData, error: upsertError } = await supabaseServer
+                              .from("contacts")
+                              .upsert(batchToSave.map((c: any) => c.contactToSave), {
+                                onConflict: "contact_id,page_id,user_id"
+                              })
+                              .select('contact_id');
+
+                            if (upsertError) {
+                              console.error(`❌ [Stream Route] DATABASE ERROR:`, upsertError);
+                              send({
+                                type: "status",
+                                message: `⚠️ DB Error: ${upsertError.message}`,
+                                totalContacts: allContacts.length
+                              });
+                            } else {
+                              console.log(`   ✅ [Stream Route] CONFIRMED: ${savedData?.length || batchToSave.length} contacts saved to database!`);
+                              send({
+                                type: "status",
+                                message: `✓ Saved ${allContacts.length} contacts from ${page.name}`,
+                                totalContacts: allContacts.length
+                              });
+                            }
+                          } catch (saveError: any) {
+                            console.error(`❌ [Stream Route] EXCEPTION:`, saveError);
+                          }
+                        }
+                      }
+                    }
+
                     // Check if there are more pages
                     currentConversationsUrl = conversationsData.paging?.next || null;
 
@@ -937,7 +1033,7 @@ export async function GET(request: NextRequest) {
                         type: "page_conversations",
                         pageName: page.name,
                         conversationsCount: allConversations.length,
-                        message: `Fetched ${allConversations.length} conversations so far${currentConversationsUrl ? ', fetching more...' : ''}`
+                        message: `Fetched ${allConversations.length} conversations, found ${allContacts.length} contacts so far${currentConversationsUrl ? ', fetching more...' : ''}`
                       });
                     }
 
