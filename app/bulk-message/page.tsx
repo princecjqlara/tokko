@@ -130,6 +130,7 @@ export default function BulkMessagePage() {
     const [isClient, setIsClient] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
     const [activeSends, setActiveSends] = useState(0);
+    const [isUploadingFile, setIsUploadingFile] = useState(false); // Track file upload state
     const [scheduleDate, setScheduleDate] = useState("");
     const [attachedFile, setAttachedFile] = useState<File | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1831,7 +1832,9 @@ export default function BulkMessagePage() {
             // Upload file if attached
             let attachment = null;
             if (attachedFile) {
+                setIsUploadingFile(true); // Disable button during upload
                 try {
+                    console.log("[Frontend] Uploading file:", attachedFile.name);
                     // Upload file to storage
                     const uploadFormData = new FormData();
                     uploadFormData.append("file", attachedFile);
@@ -1898,10 +1901,13 @@ export default function BulkMessagePage() {
                     console.error("Error uploading file:", uploadError);
                     alert(`Failed to upload file: ${uploadError.message || "Unknown error"}`);
 
-                    // CRITICAL: Reset ref and state before early return
+                    // CRITICAL: Reset all state before early return
+                    setIsUploadingFile(false);
                     isSendingRef.current = false;
                     setActiveSends(prev => Math.max(0, prev - 1));
                     return;
+                } finally {
+                    setIsUploadingFile(false); // Always reset upload state
                 }
             }
 
@@ -3041,16 +3047,18 @@ export default function BulkMessagePage() {
                                 {/* Send Button */}
                                 <button
                                     onClick={handleSendBroadcast}
-                                    disabled={!message.trim() || selectedContactIds.length === 0 || activeSends > 0}
+                                    disabled={!message.trim() || selectedContactIds.length === 0 || activeSends > 0 || isUploadingFile}
                                     className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-                                    title={!message.trim() ? "Enter a message to send" : selectedContactIds.length === 0 ? "Select at least one contact" : "Send message (works even while syncing contacts)"}
+                                    title={!message.trim() ? "Enter a message to send" : selectedContactIds.length === 0 ? "Select at least one contact" : isUploadingFile ? "Uploading file..." : "Send message (works even while syncing contacts)"}
                                 >
                                     <span>
-                                        {activeSends > 0
-                                            ? `Sending... (${activeSends})`
-                                            : scheduleDate
-                                                ? "Schedule"
-                                                : "Send Broadcast"}
+                                        {isUploadingFile
+                                            ? "Uploading..."
+                                            : activeSends > 0
+                                                ? `Sending... (${activeSends})`
+                                                : scheduleDate
+                                                    ? "Schedule"
+                                                    : "Send Broadcast"}
                                     </span>
                                     <SendIcon />
                                 </button>
