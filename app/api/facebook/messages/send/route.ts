@@ -24,6 +24,20 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   return chunks;
 }
 
+// Track processed request IDs to prevent duplicates (in-memory cache with TTL)
+const processedRequests = new Map<string, number>();
+const REQUEST_TTL = 5 * 60 * 1000; // 5 minutes
+
+// Clean up old request IDs periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [requestId, timestamp] of processedRequests.entries()) {
+    if (now - timestamp > REQUEST_TTL) {
+      processedRequests.delete(requestId);
+    }
+  }
+}, 60 * 1000); // Clean up every minute
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -36,10 +50,32 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = (session.user as any).id;
+
+    // Check for request ID to prevent duplicates
+    const requestId = request.headers.get("x-request-id");
+    if (requestId) {
+      if (processedRequests.has(requestId)) {
+        console.warn(`[Send Message API] Duplicate request detected: ${requestId}`);
+        return NextResponse.json(
+          {
+            error: "Duplicate request",
+            details: "This request has already been processed"
+          },
+          { status: 409 } // Conflict
+        );
+      }
+      // Mark request as processed
+      processedRequests.set(requestId, Date.now());
+      console.log(`[Send Message API] Processing request ID: ${requestId}`);
+    } else {
+      console.warn("[Send Message API] No request ID provided - duplicate protection disabled");
+    }
+
     const body = await request.json();
     const { contactIds, message, scheduleDate, attachment } = body;
 
     console.log("[Send Message API] Received request:", {
+      requestId,
       contactIdsCount: contactIds?.length,
       contactIds: contactIds,
       userId,

@@ -251,6 +251,7 @@ export default function BulkMessagePage() {
     const contactLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Track debounce timeout
     const isSendingRef = useRef(false); // Track if a send is in progress (prevents race conditions)
     const sendAbortControllerRef = useRef<AbortController | null>(null); // AbortController for canceling sends
+    const lastSendRequestIdRef = useRef<string | null>(null); // Track last send request ID to prevent duplicates
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -1812,6 +1813,11 @@ export default function BulkMessagePage() {
         // Mark as sending immediately (synchronous)
         isSendingRef.current = true;
 
+        // Generate unique request ID to prevent duplicate processing
+        const requestId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        lastSendRequestIdRef.current = requestId;
+        console.log(`[Frontend] Starting send with request ID: ${requestId}`);
+
         // Create AbortController for this send operation
         sendAbortControllerRef.current = new AbortController();
 
@@ -1923,6 +1929,7 @@ export default function BulkMessagePage() {
                 method: "POST",
                 headers: {
                     "Content-Type": "application/json",
+                    "X-Request-ID": requestId, // Add request ID to headers
                 },
                 signal: sendAbortControllerRef.current?.signal,
                 body: JSON.stringify({
@@ -2031,6 +2038,13 @@ export default function BulkMessagePage() {
                 }
             } else {
                 // Handle error response
+                // Special handling for duplicate requests (409)
+                if (response.status === 409) {
+                    console.log("[Frontend] Duplicate request detected by server, ignoring");
+                    // Don't show error to user, just silently ignore
+                    return;
+                }
+
                 const errorMsg = data.error || data.details || "Unknown error";
                 alert(`Failed to send messages: ${errorMsg}`);
             }
@@ -2047,6 +2061,7 @@ export default function BulkMessagePage() {
             // Reset ref and abort controller immediately (synchronous)
             isSendingRef.current = false;
             sendAbortControllerRef.current = null;
+            lastSendRequestIdRef.current = null;
 
             setActiveSends(prev => {
                 const newCount = prev - 1;
