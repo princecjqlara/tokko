@@ -49,8 +49,11 @@ export async function POST(request: NextRequest) {
     let contactsError: any = null;
     
     try {
+      // Add timeout to database queries (10 seconds)
+      const queryTimeout = 10000;
+      
       // First, try to fetch by database id (in case frontend is using database IDs)
-      const firstQuery = await supabaseServer
+      const firstQueryPromise = supabaseServer
         .from("contacts")
         .select(`
           id,
@@ -62,13 +65,20 @@ export async function POST(request: NextRequest) {
         .in("id", contactIds)
         .eq("user_id", userId);
 
+      const timeoutPromise = new Promise((_, reject) => 
+        setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
+      );
+
+      const firstQuery = await Promise.race([firstQueryPromise, timeoutPromise]) as any;
+
       contacts = firstQuery.data;
       contactsError = firstQuery.error;
 
       // If no contacts found by database id, try by contact_id
       if ((!contacts || contacts.length === 0) && contactIds.length > 0) {
         console.log("[Send Message API] No contacts found by database id, trying by contact_id");
-        const result = await supabaseServer
+        
+        const secondQueryPromise = supabaseServer
           .from("contacts")
           .select(`
             id,
@@ -80,12 +90,26 @@ export async function POST(request: NextRequest) {
           .in("contact_id", contactIds)
           .eq("user_id", userId);
         
+        const secondTimeoutPromise = new Promise((_, reject) => 
+          setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
+        );
+        
+        const result = await Promise.race([secondQueryPromise, secondTimeoutPromise]) as any;
+        
         contacts = result.data;
         contactsError = result.error;
       }
     } catch (dbError: any) {
       console.error("[Send Message API] Database error fetching contacts:", dbError);
       contactsError = dbError;
+      
+      // If it's a timeout, provide a more helpful error message
+      if (dbError.message?.includes("timeout")) {
+        contactsError = {
+          message: "Database connection timeout. Please try again in a moment.",
+          code: "TIMEOUT"
+        };
+      }
     }
 
     console.log("[Send Message API] Query result:", {
@@ -432,10 +456,37 @@ export async function POST(request: NextRequest) {
     });
   } catch (error: any) {
     console.error("Error in send message route:", error);
-    return NextResponse.json(
-      { error: "Internal server error", details: error.message },
-      { status: 500 }
-    );
+    // Always return JSON, even on errors, to prevent frontend JSON parsing issues
+    try {
+      return NextResponse.json(
+        { 
+          success: false,
+          error: "Internal server error", 
+          details: error.message || "An unexpected error occurred" 
+        },
+        { 
+          status: 500,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      );
+    } catch (jsonError) {
+      // Fallback if JSON.stringify fails (shouldn't happen)
+      return new NextResponse(
+        JSON.stringify({ 
+          success: false,
+          error: "Internal server error", 
+          details: "An unexpected error occurred" 
+        }),
+        { 
+          status: 500,
+          headers: {
+            "Content-Type": "application/json"
+          }
+        }
+      );
+    }
   }
 }
 

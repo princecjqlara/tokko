@@ -1059,7 +1059,22 @@ export default function BulkMessagePage() {
             try {
                 const response = await fetch("/api/facebook/contacts/pause");
                 if (response.ok) {
-                    const data = await response.json();
+                    const contentType = response.headers.get("content-type");
+                    let data: any;
+                    
+                    if (contentType && contentType.includes("application/json")) {
+                        try {
+                            const text = await response.text();
+                            data = text ? JSON.parse(text) : {};
+                        } catch (parseError) {
+                            console.error("Failed to parse JSON response:", parseError);
+                            return;
+                        }
+                    } else {
+                        console.error("Non-JSON response from pause API");
+                        return;
+                    }
+                    
                     const job = data.job;
                     
                     if (job && (job.status === "running" || job.status === "paused")) {
@@ -1487,7 +1502,19 @@ export default function BulkMessagePage() {
                     });
                     setSelectedContactIds([]);
                 } else {
-                    const error = await response.json();
+                    const contentType = response.headers.get("content-type");
+                    let error: any = { error: "Unknown error" };
+                    
+                    if (contentType && contentType.includes("application/json")) {
+                        try {
+                            const text = await response.text();
+                            error = text ? JSON.parse(text) : { error: "Unknown error" };
+                        } catch (parseError) {
+                            console.error("Failed to parse error response:", parseError);
+                            error = { error: `Server error (${response.status})` };
+                        }
+                    }
+                    
                     alert(`Error deleting contacts: ${error.error || "Unknown error"}`);
                 }
             } catch (error) {
@@ -1714,7 +1741,54 @@ export default function BulkMessagePage() {
                 }),
             });
 
-            const data = await response.json();
+            // Check content-type before parsing JSON
+            const contentType = response.headers.get("content-type");
+            let data: any;
+            
+            if (contentType && contentType.includes("application/json")) {
+                try {
+                    const text = await response.text();
+                    if (!text || text.trim() === "") {
+                        throw new Error("Empty response from server");
+                    }
+                    data = JSON.parse(text);
+                } catch (parseError: any) {
+                    console.error("Failed to parse JSON response:", parseError);
+                    const errorText = await response.text().catch(() => "Unknown error");
+                    throw new Error(`Server returned invalid JSON: ${errorText.substring(0, 100)}`);
+                }
+            } else {
+                // Non-JSON response (likely HTML error page from Vercel)
+                const text = await response.text();
+                const statusText = response.statusText || "Unknown";
+                const status = response.status || "Unknown";
+                
+                console.error("Non-JSON response received from send API:", {
+                    status,
+                    statusText,
+                    contentType,
+                    responseText: text.substring(0, 500),
+                    headers: Object.fromEntries(response.headers.entries())
+                });
+                
+                // Try to extract error message from HTML if it's an error page
+                let errorMessage = `Server returned non-JSON response (Status: ${status} ${statusText})`;
+                if (text) {
+                    // Try to find error message in HTML
+                    const errorMatch = text.match(/<title>(.*?)<\/title>/i) || 
+                                     text.match(/<h1>(.*?)<\/h1>/i) ||
+                                     text.match(/An error (occurred|o[^<]*)/i);
+                    if (errorMatch) {
+                        errorMessage = errorMatch[1] || errorMatch[0];
+                    } else if (text.length < 200) {
+                        errorMessage = text;
+                    } else {
+                        errorMessage = `Server error (${status} ${statusText}). Please try again.`;
+                    }
+                }
+                
+                throw new Error(errorMessage);
+            }
 
             if (response.ok && data.success) {
                 if (data.results?.scheduled) {
@@ -1727,7 +1801,9 @@ export default function BulkMessagePage() {
                     alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
                 }
             } else {
-                alert(`Failed to send messages: ${data.error || "Unknown error"}`);
+                // Handle error response
+                const errorMsg = data.error || data.details || "Unknown error";
+                alert(`Failed to send messages: ${errorMsg}`);
             }
         } catch (error: any) {
             console.error("Error sending broadcast:", error);
@@ -1772,19 +1848,42 @@ export default function BulkMessagePage() {
                 body: JSON.stringify({ scheduledMessageId: scheduledNotice.id }),
             });
 
-            const data = await response.json();
-                        if (response.ok && data.success) {
-                if (data.results?.scheduled) {
-                    setScheduledNotice({
-                        id: data.results.scheduledMessageId,
-                        scheduledFor: data.results.scheduledFor,
-                        total: data.results.total || selectedContactIds.length || 0
-                    });
-                } else {
-                    alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
+            // Check content-type before parsing JSON
+            const contentType = response.headers.get("content-type");
+            let data: any;
+            
+            if (contentType && contentType.includes("application/json")) {
+                try {
+                    const text = await response.text();
+                    if (!text || text.trim() === "") {
+                        throw new Error("Empty response from server");
+                    }
+                    data = JSON.parse(text);
+                } catch (parseError: any) {
+                    console.error("Failed to parse JSON response:", parseError);
+                    throw new Error("Server returned invalid response");
                 }
             } else {
-                alert(`Failed to send messages: ${data.error || "Unknown error"}`);
+                // Non-JSON response (likely HTML error page from Vercel)
+                const text = await response.text();
+                const statusText = response.statusText || "Unknown";
+                const status = response.status || "Unknown";
+                
+                console.error("Non-JSON response received from cancel-scheduled API:", {
+                    status,
+                    statusText,
+                    contentType,
+                    responseText: text.substring(0, 500)
+                });
+                
+                throw new Error(`Server error (${status} ${statusText}). Please try again.`);
+            }
+            
+            if (response.ok && data.success) {
+                setScheduledNotice(null);
+                alert("Scheduled message cancelled successfully");
+            } else {
+                alert(`Failed to cancel scheduled message: ${data.error || "Unknown error"}`);
             }
         } catch (error: any) {
             console.error("Error canceling scheduled message:", error);
@@ -2802,7 +2901,19 @@ export default function BulkMessagePage() {
                                                                             console.log("[Frontend] Skipping contact refresh - fetch in progress");
                                                                         }
                                                                     } else {
-                                                                        const errorData = await response.json();
+                                                                        const contentType = response.headers.get("content-type");
+                                                                        let errorData: any = { error: "Unknown error" };
+                                                                        
+                                                                        if (contentType && contentType.includes("application/json")) {
+                                                                            try {
+                                                                                const text = await response.text();
+                                                                                errorData = text ? JSON.parse(text) : { error: "Unknown error" };
+                                                                            } catch (parseError) {
+                                                                                console.error("Failed to parse error response:", parseError);
+                                                                                errorData = { error: `Server error (${response.status})` };
+                                                                            }
+                                                                        }
+                                                                        
                                                                         alert(`Failed to connect page: ${errorData.error || "Unknown error"}`);
                                                                     }
                                                                 } catch (error) {
@@ -2834,7 +2945,19 @@ export default function BulkMessagePage() {
                                                                         // Update contacts to remove contacts from disconnected page
                                                                         setContacts(prev => prev.filter(c => c.pageId !== page.id));
                                                                     } else {
-                                                                        const errorData = await response.json();
+                                                                        const contentType = response.headers.get("content-type");
+                                                                        let errorData: any = { error: "Unknown error" };
+                                                                        
+                                                                        if (contentType && contentType.includes("application/json")) {
+                                                                            try {
+                                                                                const text = await response.text();
+                                                                                errorData = text ? JSON.parse(text) : { error: "Unknown error" };
+                                                                            } catch (parseError) {
+                                                                                console.error("Failed to parse error response:", parseError);
+                                                                                errorData = { error: `Server error (${response.status})` };
+                                                                            }
+                                                                        }
+                                                                        
                                                                         alert(`Failed to disconnect page: ${errorData.error || "Unknown error"}`);
                                                                     }
                                                                 } catch (error) {
