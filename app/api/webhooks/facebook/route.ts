@@ -177,13 +177,14 @@ async function fetchContactsForUser(userId: string, pageId: string) {
 // Background function to trigger fetch and update job status
 async function triggerServerSideFetch(userId: string, pageId: string, jobId: string, pageName: string, currentCount: number) {
   try {
+    console.log(`[Webhook] Starting server-side fetch for user ${userId}, page ${pageId}, job ${jobId}`);
     const fetchResult = await fetchContactsForUser(userId, pageId);
     
     if (fetchResult.success) {
       console.log(`✅ [Webhook] Server-side fetch completed for user ${userId}: ${fetchResult.contactsFound || 0} new contacts`);
       
       // Update job status to completed
-      await supabaseServer
+      const { error: updateError } = await supabaseServer
         .from("fetch_jobs")
         .update({
           status: "completed",
@@ -192,13 +193,43 @@ async function triggerServerSideFetch(userId: string, pageId: string, jobId: str
           completed_at: new Date().toISOString()
         })
         .eq("id", jobId);
+
+      if (updateError) {
+        console.error(`[Webhook] Error updating job ${jobId} to completed:`, updateError);
+      }
     } else {
-      console.error(`[Webhook] Server-side fetch failed for user ${userId}:`, fetchResult.error);
-      // Keep job as pending so frontend can retry
+      console.error(`❌ [Webhook] Server-side fetch failed for user ${userId}:`, fetchResult.error);
+      
+      // Update job status to failed with error message
+      const { error: updateError } = await supabaseServer
+        .from("fetch_jobs")
+        .update({
+          status: "failed",
+          message: `❌ Failed to fetch contacts: ${fetchResult.error || 'Unknown error'}`,
+          completed_at: new Date().toISOString()
+        })
+        .eq("id", jobId);
+
+      if (updateError) {
+        console.error(`[Webhook] Error updating job ${jobId} to failed:`, updateError);
+      }
     }
   } catch (error: any) {
-    console.error(`[Webhook] Error in background fetch for user ${userId}:`, error);
-    // Keep job as pending so frontend can retry
+    console.error(`❌ [Webhook] Error in background fetch for user ${userId}:`, error);
+    
+    // Update job status to failed with error details
+    const { error: updateError } = await supabaseServer
+      .from("fetch_jobs")
+      .update({
+        status: "failed",
+        message: `❌ Error fetching contacts: ${error.message || 'Unknown error'}`,
+        completed_at: new Date().toISOString()
+      })
+      .eq("id", jobId);
+
+    if (updateError) {
+      console.error(`[Webhook] Error updating job ${jobId} to failed:`, updateError);
+    }
   }
 }
 
@@ -485,7 +516,16 @@ async function triggerContactFetch(pageId: string, contactId: string) {
               console.error(`[Webhook] Error updating job ${existingJob.id}:`, updateError);
             }
           } else if (existingJob.status === "pending") {
-            // Job is already pending, just update message and timestamp
+            // Job is already pending, trigger fetch again in case previous one failed
+            // This ensures syncing works even if the previous fetch failed silently
+            console.log(`[Webhook] Re-triggering fetch for pending job ${existingJob.id} for user ${userId}`);
+            
+            // Get current contact count
+            const { count } = await supabaseServer
+              .from("contacts")
+              .select("*", { count: "exact", head: true })
+              .eq("user_id", userId);
+            
             const { error: updateError } = await supabaseServer
               .from("fetch_jobs")
               .update({
@@ -498,6 +538,11 @@ async function triggerContactFetch(pageId: string, contactId: string) {
               console.error(`[Webhook] Error updating pending job ${existingJob.id}:`, updateError);
             } else {
               console.log(`✅ [Webhook] Updated pending job ${existingJob.id} for user ${userId} with new message info`);
+              
+              // Re-trigger the fetch in case the previous one failed
+              triggerServerSideFetch(userId, pageId, existingJob.id, pageName, count || 0).catch((err) => {
+                console.error(`[Webhook] Background fetch error for user ${userId} (retry):`, err);
+              });
             }
           }
         }
