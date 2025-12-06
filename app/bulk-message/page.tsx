@@ -248,7 +248,8 @@ export default function BulkMessagePage() {
     const fetchContactsRealtimeRef = useRef<(() => Promise<void>) | null>(null); // Ref to store fetchContactsRealtime function
     const isLoadingContactsRef = useRef(false); // Prevent multiple simultaneous contact loads
     const lastContactLoadTimeRef = useRef<number>(0); // Track last contact load time to prevent rapid successive loads
-    const contactLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Debounce timeout
+    const contactLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Track debounce timeout
+    const isSendingRef = useRef(false); // Track if a send is in progress (prevents race conditions)
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -1780,13 +1781,22 @@ export default function BulkMessagePage() {
             return;
         }
 
-        // Prevent multiple simultaneous sends - check BEFORE incrementing
-        if (activeSends > 0) {
-            console.warn("[Frontend] Send already in progress, ignoring duplicate call. Active sends:", activeSends);
+        // CRITICAL: Use ref for immediate synchronous check (state updates are async)
+        if (isSendingRef.current) {
+            console.warn("[Frontend] Send already in progress (ref check), ignoring duplicate call");
             return;
         }
 
-        // Increment active sends counter
+        // Also check state as backup
+        if (activeSends > 0) {
+            console.warn("[Frontend] Send already in progress (state check), ignoring duplicate call. Active sends:", activeSends);
+            return;
+        }
+
+        // Mark as sending immediately (synchronous)
+        isSendingRef.current = true;
+
+        // Increment active sends counter for UI
         setActiveSends(prev => {
             console.log("[Frontend] Starting send, incrementing activeSends from", prev, "to", prev + 1);
             return prev + 1;
@@ -1862,7 +1872,10 @@ export default function BulkMessagePage() {
                 } catch (uploadError: any) {
                     console.error("Error uploading file:", uploadError);
                     alert(`Failed to upload file: ${uploadError.message || "Unknown error"}`);
-                    // Don't decrement here - let finally block handle it
+
+                    // CRITICAL: Reset ref and state before early return
+                    isSendingRef.current = false;
+                    setActiveSends(prev => Math.max(0, prev - 1));
                     return;
                 }
             }
@@ -2005,8 +2018,13 @@ export default function BulkMessagePage() {
             console.error("Error sending broadcast:", error);
             alert(`Error: ${error.message || "Failed to send messages"}`);
         } finally {
+            // Reset ref immediately (synchronous)
+            isSendingRef.current = false;
+
             setActiveSends(prev => {
                 const newCount = prev - 1;
+                console.log("[Frontend] Send completed, decrementing activeSends from", prev, "to", newCount);
+
                 // Clear form only if this was the last active send
                 if (newCount === 0) {
                     setMessage("");
