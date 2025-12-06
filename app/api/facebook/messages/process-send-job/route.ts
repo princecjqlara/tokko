@@ -221,7 +221,8 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
               .single();
 
             if (!retryResult.error && retryResult.data) {
-              return await sendMessagesForPage(pageId, contacts, message, attachment, userAccessToken);
+              // Pass sentContactIds to prevent duplicates on retry
+              return await sendMessagesForPage(pageId, contacts, message, attachment, userAccessToken, sentContactIds);
             }
           }
         }
