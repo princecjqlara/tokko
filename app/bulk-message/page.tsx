@@ -1901,10 +1901,11 @@ export default function BulkMessagePage() {
                     console.error("Error uploading file:", uploadError);
                     alert(`Failed to upload file: ${uploadError.message || "Unknown error"}`);
 
-                    // CRITICAL: Reset all state before early return
+                    // CRITICAL: Reset sending state before early return
+                    // NOTE: Do NOT decrement activeSends here - the finally block will do it
                     setIsUploadingFile(false);
                     isSendingRef.current = false;
-                    setActiveSends(prev => Math.max(0, prev - 1));
+                    // The finally block will decrement activeSends
                     return;
                 } finally {
                     setIsUploadingFile(false); // Always reset upload state

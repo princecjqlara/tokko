@@ -10,10 +10,14 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 
 export async function POST(request: NextRequest) {
+  console.log("[Upload API] Received upload request");
+
   // Ensure we always return JSON, even on errors
   try {
     const session = await getServerSession(authOptions);
-    
+
+    console.log("[Upload API] Session check:", { hasSession: !!session, hasAccessToken: !!(session as any)?.accessToken });
+
     if (!session || !(session as any).accessToken) {
       return NextResponse.json(
         { error: "Unauthorized" },
@@ -22,7 +26,8 @@ export async function POST(request: NextRequest) {
     }
 
     const userId = (session.user as any).id;
-    
+    console.log("[Upload API] User ID:", userId);
+
     if (!userId) {
       console.error("No user ID in session:", session);
       return NextResponse.json(
@@ -30,8 +35,9 @@ export async function POST(request: NextRequest) {
         { status: 401 }
       );
     }
-    
+
     // Parse form data with error handling
+    console.log("[Upload API] Parsing form data...");
     let formData: FormData;
     try {
       formData = await request.formData();
@@ -42,9 +48,9 @@ export async function POST(request: NextRequest) {
         { status: 400 }
       );
     }
-    
+
     const file = formData.get("file") as File;
-    
+
     if (!file || !(file instanceof File)) {
       console.error("Invalid file object:", file);
       return NextResponse.json(
@@ -111,7 +117,7 @@ export async function POST(request: NextRequest) {
     // Convert file to buffer
     let arrayBuffer: ArrayBuffer;
     let buffer: Buffer;
-    
+
     try {
       arrayBuffer = await file.arrayBuffer();
       buffer = Buffer.from(arrayBuffer);
@@ -137,8 +143,8 @@ export async function POST(request: NextRequest) {
     } catch (uploadException: any) {
       console.error("Exception during upload:", uploadException);
       return NextResponse.json(
-        { 
-          error: "Failed to upload file to storage", 
+        {
+          error: "Failed to upload file to storage",
           details: uploadException.message || "Unknown upload error"
         },
         { status: 500 }
@@ -147,18 +153,18 @@ export async function POST(request: NextRequest) {
 
     if (error) {
       console.error("Error uploading file:", error);
-      
+
       // Provide helpful error message if bucket doesn't exist
       if (error.message?.includes("Bucket not found") || error.message?.includes("does not exist")) {
         return NextResponse.json(
-          { 
+          {
             error: "Storage bucket 'message-attachments' not found. Please create it in Supabase Storage settings and make it public.",
-            details: error.message 
+            details: error.message
           },
           { status: 500 }
         );
       }
-      
+
       return NextResponse.json(
         { error: "Failed to upload file", details: error.message },
         { status: 500 }
@@ -173,7 +179,7 @@ export async function POST(request: NextRequest) {
     if (!urlData || !urlData.publicUrl) {
       console.error("Failed to get public URL for uploaded file");
       return NextResponse.json(
-        { 
+        {
           error: "Failed to generate public URL for uploaded file",
           details: "The file was uploaded but the public URL could not be generated"
         },
@@ -184,7 +190,7 @@ export async function POST(request: NextRequest) {
     if (!data || !data.path) {
       console.error("Upload succeeded but no path returned");
       return NextResponse.json(
-        { 
+        {
           error: "Upload succeeded but file path is missing",
           details: "The file was uploaded but the path information is missing"
         },
@@ -202,12 +208,12 @@ export async function POST(request: NextRequest) {
   } catch (error: any) {
     console.error("Error in upload route:", error);
     console.error("Error stack:", error.stack);
-    
+
     // Ensure we always return JSON, never HTML
     try {
       return NextResponse.json(
-        { 
-          error: "Internal server error", 
+        {
+          error: "Internal server error",
           details: error.message || "Unknown error",
           stack: process.env.NODE_ENV === "development" ? error.stack : undefined
         },
@@ -216,11 +222,11 @@ export async function POST(request: NextRequest) {
     } catch (jsonError) {
       // Last resort - if even JSON creation fails, return plain text as JSON
       return new NextResponse(
-        JSON.stringify({ 
-          error: "Critical error", 
-          details: "Failed to create error response" 
+        JSON.stringify({
+          error: "Critical error",
+          details: "Failed to create error response"
         }),
-        { 
+        {
           status: 500,
           headers: { "Content-Type": "application/json" }
         }
