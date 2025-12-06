@@ -402,9 +402,11 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // Group contacts by page to send messages efficiently
-    const contactsByPage = new Map<string, any[]>();
+    // NEW LOGIC: Send TEXT first to ALL contacts, then MEDIA to ALL contacts
+    // This prevents issues with duplicate sends and ensures proper message ordering
 
+    // Group contacts by page
+    const contactsByPage = new Map<string, any[]>();
     for (const contact of contacts) {
       const pageId = contact.page_id;
       if (!contactsByPage.has(pageId)) {
@@ -412,6 +414,10 @@ export async function POST(request: NextRequest) {
       }
       contactsByPage.get(pageId)!.push(contact);
     }
+
+    // Track which contacts we've already sent to (prevents duplicates within this request)
+    const sentTextToContacts = new Set<string>();
+    const sentMediaToContacts = new Set<string>();
 
     const results = {
       success: 0,
@@ -422,244 +428,80 @@ export async function POST(request: NextRequest) {
 
     // Track start time for timeout protection
     const startTime = Date.now();
-    const VERCEL_TIMEOUT = 280000; // 280 seconds (leave 20s buffer before Vercel's 300s limit)
+    const VERCEL_TIMEOUT = 280000; // 280 seconds
 
-    // Send messages to each page's contacts
+    console.log(`[Send Message API] Starting send operation for ${contacts.length} contacts`);
+
+    // STEP 1: Send TEXT messages to ALL contacts first
+    console.log(`[Send Message API] STEP 1: Sending TEXT to all contacts...`);
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
-      // Check if we're approaching timeout
-      const elapsed = Date.now() - startTime;
-      if (elapsed > VERCEL_TIMEOUT) {
-        console.warn(`[Send Message API] Approaching timeout (${Math.round(elapsed / 1000)}s elapsed), returning partial results`);
-        return NextResponse.json({
-          success: true,
-          results: {
-            total: contactIds.length,
-            sent: results.success,
-            failed: results.failed,
-            errors: results.errors,
-            scheduled: false,
-            partial: true,
-            message: `Timeout approaching. Sent ${results.success} messages. ${contactIds.length - results.success - results.failed} remaining. Please retry with smaller batch or use scheduling.`
-          }
-        });
-      }
-      // Get page access token from facebook_pages table
-      const firstContact = pageContacts[0];
-
-      // Fetch page access token separately
-      let pageData: any = null;
-      let pageError: any = null;
-
-      try {
-        // Add timeout to database query (5 seconds)
-        const pageQueryPromise = supabaseServer
-          .from("facebook_pages")
-          .select("page_id, page_access_token")
-          .eq("page_id", pageId)
-          .maybeSingle();
-
-        const timeoutPromise = new Promise((_, reject) =>
-          setTimeout(() => reject(new Error("Database query timeout")), 5000)
-        );
-
-        const pageQuery = await Promise.race([pageQueryPromise, timeoutPromise]) as any;
-
-        pageData = pageQuery.data;
-        pageError = pageQuery.error;
-      } catch (dbError: any) {
-        console.error(`[Send Message API] Database error fetching page ${pageId}:`, dbError);
-        pageError = dbError;
-
-        // If it's a timeout, allow fallback to Facebook API
-        if (dbError.message?.includes("timeout")) {
-          console.log(`[Send Message API] Database timeout for page ${pageId}, will fetch from Facebook API`);
-          pageError = null; // Clear error to allow fallback
-        }
+      // Check timeout
+      if (Date.now() - startTime > VERCEL_TIMEOUT) {
+        console.warn(`[Send Message API] Timeout approaching during TEXT phase`);
+        break;
       }
 
-      // If page not found, try to fetch it from Facebook API
-      if (pageError || !pageData) {
-        console.log(`Page ${pageId} not in database, fetching from Facebook API...`);
+      // Get page access token
+      const { data: pageData, error: pageError } = await supabaseServer
+        .from("facebook_pages")
+        .select("page_id, page_access_token")
+        .eq("page_id", pageId)
+        .maybeSingle();
 
-        try {
-          // Fetch pages from Facebook API
-          const pagesResponse = await fetch(
-            `https://graph.facebook.com/v18.0/me/accounts?access_token=${(session as any).accessToken}&fields=id,name,access_token&limit=1000`
-          );
-
-          if (pagesResponse.ok) {
-            const pagesData = await pagesResponse.json();
-            const pages = pagesData.data || [];
-
-            // Find the page we need
-            const foundPage = pages.find((p: any) => p.id === pageId);
-
-            if (foundPage) {
-              // Store the page in database
-              const { error: storeError } = await supabaseServer
-                .from("facebook_pages")
-                .upsert({
-                  page_id: foundPage.id,
-                  page_name: foundPage.name,
-                  page_access_token: foundPage.access_token,
-                  updated_at: new Date().toISOString(),
-                }, {
-                  onConflict: "page_id",
-                });
-
-              if (!storeError) {
-                // Retry fetching from database
-                try {
-                  const retryResult = await supabaseServer
-                    .from("facebook_pages")
-                    .select("page_id, page_access_token")
-                    .eq("page_id", pageId)
-                    .maybeSingle();
-
-                  pageData = retryResult.data;
-                  pageError = retryResult.error;
-                  console.log(`✅ Successfully fetched and stored page ${pageId}`);
-                } catch (retryError: any) {
-                  console.error(`[Send Message API] Error retrying page fetch:`, retryError);
-                  pageError = retryError;
-                }
-              }
-            }
-          }
-        } catch (fetchError) {
-          console.error(`Error fetching page from Facebook API:`, fetchError);
-        }
-      }
-
-      if (pageError || !pageData) {
-        console.error(`No access token for page ${pageId}:`, pageError);
+      if (pageError || !pageData?.page_access_token) {
+        console.error(`[Send Message API] No access token for page ${pageId}`);
         results.failed += pageContacts.length;
         results.errors.push({
-          page: firstContact.page_name,
-          error: "No access token available for this page. Please fetch pages first by visiting /api/facebook/pages"
+          page: pageContacts[0]?.page_name || pageId,
+          error: "No access token available for this page"
         });
         continue;
       }
 
       const pageAccessToken = pageData.page_access_token;
 
-      if (!pageAccessToken) {
-        console.error(`No access token for page ${pageId}`);
-        results.failed += pageContacts.length;
-        results.errors.push({
-          page: firstContact.page_name,
-          error: "No access token available for this page"
-        });
-        continue;
-      }
-
-      // Send message to each contact on this page
+      // Send TEXT to each contact on this page
       for (const contact of pageContacts) {
-        try {
-          console.log(`[Send] Processing contact: ${contact.contact_name} (${contact.contact_id})`);
+        // Skip if already sent text to this contact
+        if (sentTextToContacts.has(contact.contact_id)) {
+          console.log(`[Send Message API] Skipping duplicate TEXT for ${contact.contact_name}`);
+          continue;
+        }
 
-          // Replace {FirstName} placeholder if present
+        try {
+          // Replace {FirstName} placeholder
           let personalizedMessage = message;
           const firstName = contact.contact_name?.split(' ')[0] || 'there';
           personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
 
-          console.log(`[Send] Message text: "${personalizedMessage}"`);
-          console.log(`[Send] Has attachment: ${!!attachment}, URL: ${attachment?.url}`);
+          console.log(`[Send Message API] Sending TEXT to ${contact.contact_name}...`);
 
-          // IMPORTANT: Facebook Messenger API Limitation
-          // Media and text MUST be sent as 2 separate messages
-          // This is NOT a bug - it's how Facebook's API works
-          // The user will receive 2 messages when media is attached
-
-          // Send media first if attachment exists
-          if (attachment && attachment.url) {
-            try {
-              const attachmentType = attachment.type || "file";
-              console.log(`[Send] Sending ${attachmentType} to ${contact.contact_name}...`);
-
-              const mediaPayload: any = {
-                recipient: {
-                  id: contact.contact_id
-                },
-                message: {
-                  attachment: {
-                    type: attachmentType,
-                    payload: {
-                      url: attachment.url,
-                      is_reusable: true
-                    }
-                  }
-                },
-                messaging_type: "MESSAGE_TAG",
-                tag: "ACCOUNT_UPDATE"
-              };
-
-              const mediaResponse = await fetch(
-                `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify(mediaPayload),
-                }
-              );
-
-              const mediaData = await mediaResponse.json();
-
-              if (mediaResponse.ok && !mediaData.error) {
-                const typeLabel = attachmentType === "image" ? "image" :
-                  attachmentType === "video" ? "video" :
-                    attachmentType === "audio" ? "audio" : "file";
-                console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
-                // Wait before sending text to ensure proper ordering
-                await new Promise(resolve => setTimeout(resolve, 500));
-              } else {
-                const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
-                console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
-                console.error(`❌ Full error:`, mediaData);
-                // Continue to send text even if media fails
-              }
-            } catch (mediaError: any) {
-              console.error(`❌ Error sending media to ${contact.contact_name}:`, mediaError);
-              // Continue to send text even if media fails
-            }
-          }
-
-          // Send text message (always send, even if media was sent)
-          console.log(`[Send] Sending text message to ${contact.contact_name}...`);
-          const textPayload: any = {
-            recipient: {
-              id: contact.contact_id
-            },
-            message: {
-              text: personalizedMessage
-            },
+          const textPayload = {
+            recipient: { id: contact.contact_id },
+            message: { text: personalizedMessage },
             messaging_type: "MESSAGE_TAG",
             tag: "ACCOUNT_UPDATE"
           };
 
-          const sendResponse = await fetch(
+          const response = await fetch(
             `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
             {
               method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
+              headers: { "Content-Type": "application/json" },
               body: JSON.stringify(textPayload),
             }
           );
 
-          const sendData = await sendResponse.json();
+          const data = await response.json();
 
-          if (sendResponse.ok && !sendData.error) {
+          if (response.ok && !data.error) {
             results.success++;
-            console.log(`✅ Sent text message to ${contact.contact_name} (${contact.contact_id})`);
+            sentTextToContacts.add(contact.contact_id);
+            console.log(`✅ Sent TEXT to ${contact.contact_name} (${contact.contact_id})`);
           } else {
             results.failed++;
-            const errorMsg = sendData.error?.message || "Unknown error";
-            console.error(`❌ Failed to send text to ${contact.contact_name}:`, errorMsg);
-            console.error(`❌ Full error:`, sendData);
+            const errorMsg = data.error?.message || "Unknown error";
+            console.error(`❌ Failed TEXT to ${contact.contact_name}: ${errorMsg}`);
             results.errors.push({
               contact: contact.contact_name,
               page: contact.page_name,
@@ -667,12 +509,11 @@ export async function POST(request: NextRequest) {
             });
           }
 
-          // Rate limiting: Add delay between messages to avoid hitting rate limits
-          // Facebook allows ~200 calls per hour per page
-          await new Promise(resolve => setTimeout(resolve, 100)); // 100ms delay = ~36 messages per minute max
+          // Rate limiting
+          await new Promise(resolve => setTimeout(resolve, 100));
         } catch (error: any) {
           results.failed++;
-          console.error(`❌ Error sending to ${contact.contact_name}:`, error);
+          console.error(`❌ Error sending TEXT to ${contact.contact_name}:`, error);
           results.errors.push({
             contact: contact.contact_name,
             page: contact.page_name,
@@ -681,6 +522,92 @@ export async function POST(request: NextRequest) {
         }
       }
     }
+
+    console.log(`[Send Message API] TEXT phase complete: ${sentTextToContacts.size} sent`);
+
+    // STEP 2: Send MEDIA to ALL contacts (only if attachment exists)
+    if (attachment && attachment.url) {
+      console.log(`[Send Message API] STEP 2: Sending MEDIA to all contacts...`);
+
+      for (const [pageId, pageContacts] of contactsByPage.entries()) {
+        // Check timeout
+        if (Date.now() - startTime > VERCEL_TIMEOUT) {
+          console.warn(`[Send Message API] Timeout approaching during MEDIA phase`);
+          break;
+        }
+
+        // Get page access token
+        const { data: pageData } = await supabaseServer
+          .from("facebook_pages")
+          .select("page_id, page_access_token")
+          .eq("page_id", pageId)
+          .maybeSingle();
+
+        if (!pageData?.page_access_token) {
+          continue; // Already logged error in TEXT phase
+        }
+
+        const pageAccessToken = pageData.page_access_token;
+        const attachmentType = attachment.type || "file";
+
+        // Send MEDIA to each contact on this page
+        for (const contact of pageContacts) {
+          // Skip if already sent media to this contact
+          if (sentMediaToContacts.has(contact.contact_id)) {
+            console.log(`[Send Message API] Skipping duplicate MEDIA for ${contact.contact_name}`);
+            continue;
+          }
+
+          try {
+            console.log(`[Send Message API] Sending MEDIA to ${contact.contact_name}...`);
+
+            const mediaPayload = {
+              recipient: { id: contact.contact_id },
+              message: {
+                attachment: {
+                  type: attachmentType,
+                  payload: {
+                    url: attachment.url,
+                    is_reusable: true
+                  }
+                }
+              },
+              messaging_type: "MESSAGE_TAG",
+              tag: "ACCOUNT_UPDATE"
+            };
+
+            const response = await fetch(
+              `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+              {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(mediaPayload),
+              }
+            );
+
+            const data = await response.json();
+
+            if (response.ok && !data.error) {
+              sentMediaToContacts.add(contact.contact_id);
+              console.log(`✅ Sent MEDIA to ${contact.contact_name} (${contact.contact_id})`);
+            } else {
+              const errorMsg = data.error?.message || "Unknown error";
+              console.error(`❌ Failed MEDIA to ${contact.contact_name}: ${errorMsg}`);
+              // Don't add to failed count since text was already counted
+            }
+
+            // Rate limiting
+            await new Promise(resolve => setTimeout(resolve, 100));
+          } catch (error: any) {
+            console.error(`❌ Error sending MEDIA to ${contact.contact_name}:`, error);
+          }
+        }
+      }
+
+      console.log(`[Send Message API] MEDIA phase complete: ${sentMediaToContacts.size} sent`);
+    }
+
+    console.log(`[Send Message API] Operation complete: ${results.success} success, ${results.failed} failed`);
 
     return NextResponse.json({
       success: true,
