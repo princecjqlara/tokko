@@ -340,12 +340,6 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
 // POST: Process a specific send job (triggered by send route or manually)
 export async function POST(request: NextRequest) {
   try {
-    const session = await getServerSession(authOptions);
-    
-    if (!session) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
-
     const body = await request.json();
     const { jobId, accessToken } = body;
 
@@ -353,21 +347,46 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "jobId is required" }, { status: 400 });
     }
     
+    // Try to get session, but allow processing if accessToken is provided (server-side trigger)
+    const session = await getServerSession(authOptions);
+    let userAccessToken = accessToken || null;
+    
+    // If no accessToken provided and no session, require authentication
+    if (!userAccessToken && !session) {
+      return NextResponse.json({ error: "Unauthorized - session or accessToken required" }, { status: 401 });
+    }
+    
     // Use provided access token or get from session
-    const userAccessToken = accessToken || ((session as any).accessToken || null);
+    if (!userAccessToken && session) {
+      userAccessToken = (session as any).accessToken || null;
+    }
+    
+    // For server-side triggers, we need userId from the job itself
+    let userId: string | null = null;
+    if (session) {
+      userId = (session.user as any).id;
+    }
 
-    const userId = (session.user as any).id;
-
-    // Fetch the job
+    // Fetch the job first to get userId (for server-side triggers)
     const { data: sendJob, error: jobError } = await supabaseServer
       .from("send_jobs")
       .select("*")
       .eq("id", jobId)
-      .eq("user_id", userId)
       .single();
 
     if (jobError || !sendJob) {
-      return NextResponse.json({ error: "Job not found" }, { status: 404 });
+      return NextResponse.json({ error: "Job not found", details: jobError?.message }, { status: 404 });
+    }
+    
+    // If we have a session, verify the job belongs to the user
+    if (session) {
+      userId = (session.user as any).id;
+      if (sendJob.user_id !== userId) {
+        return NextResponse.json({ error: "Unauthorized - job does not belong to user" }, { status: 403 });
+      }
+    } else {
+      // For server-side triggers, use the job's userId
+      userId = sendJob.user_id;
     }
 
     // Only process pending jobs
@@ -414,22 +433,30 @@ export async function GET(request: NextRequest) {
     const isVercelCron = hasVercelHeaders || (hasVercelUserAgent && !authHeader);
     
     // For manual triggers, require session
-    if (!isVercelCron) {
-      const session = await getServerSession(authOptions);
-      if (!session) {
-        return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-      }
+    const session = await getServerSession(authOptions);
+    if (!isVercelCron && !session) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
     const MAX_JOBS_PER_RUN = 5;
     
     // Find pending jobs
-    const { data: pendingJobs, error: pendingError } = await supabaseServer
+    // For cron: process all pending jobs
+    // For manual: only process user's jobs
+    let query = supabaseServer
       .from("send_jobs")
       .select("*")
       .eq("status", "pending")
       .order("started_at", { ascending: true })
       .limit(MAX_JOBS_PER_RUN);
+    
+    // If manual trigger with session, filter by user
+    if (!isVercelCron && session) {
+      const userId = (session.user as any).id;
+      query = query.eq("user_id", userId);
+    }
+    
+    const { data: pendingJobs, error: pendingError } = await query;
     
     if (pendingError) {
       console.error("Error fetching pending send jobs:", pendingError);
@@ -443,24 +470,16 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ message: "No pending jobs", processed: 0 });
     }
 
-    // Process jobs (for cron, we'll process them sequentially)
-    // For manual triggers with session, process the user's jobs
+    // Process jobs sequentially
     let processed = 0;
-    const session = await getServerSession(authOptions);
     
     for (const job of pendingJobs) {
-      // If manual trigger, only process user's own jobs
-      if (!isVercelCron && session) {
-        const userId = (session.user as any).id;
-        if (job.user_id !== userId) {
-          continue;
-        }
-      }
-      
       // Get user access token if we have a session
       // For cron jobs, we won't have session, so rely on stored page tokens
+      // Note: For cron jobs, we can't fetch user access tokens, so we rely on stored page tokens
       const userAccessToken = session ? ((session as any).accessToken || null) : null;
       
+      console.log(`[Process Send Job] Processing job ${job.id} (user: ${job.user_id}, status: ${job.status})`);
       await processSendJob(job as SendJobRecord, userAccessToken);
       processed++;
     }

@@ -190,16 +190,29 @@ export async function POST(request: NextRequest) {
           
           // Trigger background processing asynchronously (don't wait for it)
           // Pass the access token so the job processor can fetch pages if needed
-          fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/facebook/messages/process-send-job`, {
+          // Note: We don't use Authorization header since process-send-job accepts accessToken in body
+          let triggerUrl = 'http://localhost:3000';
+          if (process.env.NEXTAUTH_URL) {
+            triggerUrl = process.env.NEXTAUTH_URL;
+          } else if (process.env.VERCEL_URL) {
+            triggerUrl = `https://${process.env.VERCEL_URL}`;
+          }
+          triggerUrl = `${triggerUrl}/api/facebook/messages/process-send-job`;
+          fetch(triggerUrl, {
             method: "POST",
             headers: {
               "Content-Type": "application/json",
-              "Authorization": `Bearer ${(session as any).accessToken}`,
             },
             body: JSON.stringify({ 
               jobId: sendJob.id,
               accessToken: (session as any).accessToken 
             }),
+          }).then(response => {
+            if (!response.ok) {
+              console.error(`[Send Message API] Failed to trigger background job: ${response.status} ${response.statusText}`);
+            } else {
+              console.log(`[Send Message API] Background job trigger sent successfully for job ${sendJob.id}`);
+            }
           }).catch(err => {
             console.error("[Send Message API] Failed to trigger background job:", err);
             // Job will be picked up by cron or manual trigger
