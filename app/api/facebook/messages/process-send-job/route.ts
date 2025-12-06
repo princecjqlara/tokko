@@ -160,7 +160,7 @@ async function sendMessageToContact(pageAccessToken: string, contact: ContactRec
   };
 }
 
-async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], message: string, attachment: any, userAccessToken: string | null) {
+async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], message: string, attachment: any, userAccessToken: string | null, sentContactIds?: Set<string>) {
   const { data: pageData, error: pageError } = await supabaseServer
     .from("facebook_pages")
     .select("page_id, page_access_token, page_name")
@@ -223,12 +223,23 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
   let success = 0;
   let failed = 0;
   const errors: any[] = [];
+  
+  // Track sent contacts in this job to prevent duplicates
+  // Use the provided Set or create a new one
+  const localSentIds = sentContactIds || new Set<string>();
 
   for (const contact of contacts) {
+    // Skip if we've already sent to this contact in this job run
+    if (localSentIds.has(contact.contact_id)) {
+      console.log(`⏭️ Skipping duplicate contact: ${contact.contact_name} (${contact.contact_id}) - already sent in this job`);
+      continue;
+    }
+    
     const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment);
 
     if (sendResult.success) {
       success++;
+      localSentIds.add(contact.contact_id); // Mark as sent
       console.log(`✅ Sent message to ${contact.contact_name} (${contact.contact_id})`);
     } else {
       failed++;
@@ -239,32 +250,48 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
         page: contact.page_name,
         error: errorMsg
       });
+      // Don't mark failed sends as sent, so they can be retried if job is rerun
     }
 
     await sleep(MESSAGE_SEND_THROTTLE_MS);
+  }
+  
+  // Update the passed Set so caller can track sent contacts across pages
+  if (sentContactIds) {
+    localSentIds.forEach(id => sentContactIds.add(id));
   }
 
   return { success, failed, errors };
 }
 
 async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | null) {
-  // Check if job is already running or completed (prevent duplicate processing)
-  if (sendJob.status === "running") {
-    console.log(`[Process Send Job] Job ${sendJob.id} is already running, skipping`);
+  // Allow resuming incomplete jobs (status: "running" but not completed)
+  // Check if job is completed or permanently failed
+  if (sendJob.status === "completed") {
+    console.log(`[Process Send Job] Job ${sendJob.id} is already completed, skipping`);
     return;
   }
   
-  if (sendJob.status === "completed" || sendJob.status === "failed") {
-    console.log(`[Process Send Job] Job ${sendJob.id} is already ${sendJob.status}, skipping`);
-    return;
+  if (sendJob.status === "failed") {
+    // Check if it's a permanent failure or can be resumed
+    const totalProcessed = (sendJob.sent_count || 0) + (sendJob.failed_count || 0);
+    const totalExpected = sendJob.total_count || 0;
+    
+    // If job failed but processed all contacts, don't resume
+    if (totalProcessed >= totalExpected) {
+      console.log(`[Process Send Job] Job ${sendJob.id} failed but processed all contacts, skipping`);
+      return;
+    }
+    
+    // Otherwise, allow resuming failed jobs that didn't complete
+    console.log(`[Process Send Job] Resuming failed job ${sendJob.id} (${totalProcessed}/${totalExpected} processed)`);
   }
 
-  // Move to running state early to avoid duplicate work
+  // Move to running state (allow resuming from "running" or "failed" status)
   await supabaseServer
     .from("send_jobs")
     .update({ status: "running", updated_at: new Date().toISOString() })
-    .eq("id", sendJob.id)
-    .eq("status", "pending"); // Only update if still pending (atomic check)
+    .eq("id", sendJob.id);
 
   try {
     const contactIds = coerceContactIds(sendJob.contact_ids);
@@ -298,6 +325,40 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     if (deduplicatedContacts.length !== contacts.length) {
       console.log(`[Process Send Job] Removed ${contacts.length - deduplicatedContacts.length} duplicate contacts`);
     }
+    
+    // Get already sent contacts from job to prevent duplicates on resume
+    // Store sent contact_ids in errors array as metadata
+    const alreadySentCount = sendJob.sent_count || 0;
+    const alreadyFailedCount = sendJob.failed_count || 0;
+    const alreadyProcessed = alreadySentCount + alreadyFailedCount;
+    
+    // Extract sent contact IDs from errors array (stored as metadata)
+    const sentContactIdsSet = new Set<string>();
+    if (sendJob.errors && Array.isArray(sendJob.errors)) {
+      for (const error of sendJob.errors) {
+        if (error.sent_contact_ids && Array.isArray(error.sent_contact_ids)) {
+          error.sent_contact_ids.forEach((id: string) => sentContactIdsSet.add(id));
+        }
+      }
+    }
+    
+    // If resuming and we have sent contacts, filter them out
+    let contactsToProcess = deduplicatedContacts;
+    if (sentContactIdsSet.size > 0) {
+      contactsToProcess = deduplicatedContacts.filter(c => !sentContactIdsSet.has(c.contact_id));
+      console.log(`[Process Send Job] Job ${sendJob.id}: Resuming - skipping ${sentContactIdsSet.size} already sent contacts, processing ${contactsToProcess.length} remaining`);
+    } else {
+      console.log(`[Process Send Job] Job ${sendJob.id}: Starting fresh - processing ${contactsToProcess.length} contacts`);
+    }
+    
+    // Re-group remaining contacts by page
+    contactsByPage.clear();
+    for (const contact of contactsToProcess) {
+      if (!contactsByPage.has(contact.page_id)) {
+        contactsByPage.set(contact.page_id, []);
+      }
+      contactsByPage.get(contact.page_id)!.push(contact);
+    }
 
     // Group by page
     const contactsByPage = new Map<string, ContactRecord[]>();
@@ -308,68 +369,103 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       contactsByPage.get(contact.page_id)!.push(contact);
     }
 
-    let messageSuccess = 0;
-    let messageFailed = 0;
-    const messageErrors: any[] = [];
+    // Start with existing counts if resuming
+    let messageSuccess = alreadySentCount;
+    let messageFailed = alreadyFailedCount;
+    // Filter out metadata entries from errors, keep only actual errors
+    const messageErrors: any[] = (sendJob.errors || []).filter((e: any) => !e._metadata);
     const startTime = Date.now();
     const VERCEL_TIMEOUT = 280000; // 280 seconds buffer
+    
+    // Track which contacts have been sent (to prevent duplicates on resume)
+    // Initialize with already sent contacts
+    const sentContactIds = new Set<string>(sentContactIdsSet);
+    
+    let processedPages = 0;
+    let totalPages = contactsByPage.size;
 
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
       // Check timeout before processing each page
       const elapsed = Date.now() - startTime;
       if (elapsed > VERCEL_TIMEOUT) {
-        console.warn(`[Process Send Job] Approaching timeout (${Math.round(elapsed/1000)}s), stopping at page ${pageId}`);
-        // Update job with partial progress
+        console.warn(`[Process Send Job] Approaching timeout (${Math.round(elapsed/1000)}s), stopping at page ${pageId} (${processedPages}/${totalPages} pages processed)`);
+        // Update job with partial progress - mark as "running" so it can be resumed
         await supabaseServer
           .from("send_jobs")
           .update({
             sent_count: messageSuccess,
             failed_count: messageFailed,
-            errors: [...messageErrors, { error: `Timeout: Processed ${messageSuccess + messageFailed} of ${deduplicatedContacts.length} contacts` }],
-            updated_at: new Date().toISOString()
+            errors: [...messageErrors, { error: `Timeout: Processed ${messageSuccess + messageFailed} of ${deduplicatedContacts.length} contacts. Job will resume on next cron run.` }],
+            updated_at: new Date().toISOString(),
+            status: "running" // Keep as running so cron can resume it
           })
           .eq("id", sendJob.id);
-        break;
+        console.log(`[Process Send Job] Job ${sendJob.id} paused due to timeout. Will resume on next cron run.`);
+        return; // Exit early, job will be picked up by next cron run
       }
+      
+      console.log(`[Process Send Job] Processing page ${pageId} (${pageContacts.length} contacts, ${processedPages + 1}/${totalPages} pages)`);
       
       const result = await sendMessagesForPage(
         pageId,
         pageContacts,
         sendJob.message,
         sendJob.attachment,
-        userAccessToken
+        userAccessToken,
+        sentContactIds // Pass sent tracking to prevent duplicates
       );
 
       messageSuccess += result.success;
       messageFailed += result.failed;
       messageErrors.push(...result.errors);
+      processedPages++;
 
-      // Update progress periodically after each page
+      // Update progress after each page (important for resume)
+      // Store sent contact IDs in errors array as metadata for resume
+      const sentContactIdsArray = Array.from(sentContactIds);
+      const errorsWithMetadata = [
+        ...messageErrors,
+        { 
+          _metadata: { 
+            sent_contact_ids: sentContactIdsArray,
+            last_updated: new Date().toISOString()
+          }
+        }
+      ];
+      
       await supabaseServer
         .from("send_jobs")
         .update({
           sent_count: messageSuccess,
           failed_count: messageFailed,
-          errors: messageErrors,
+          errors: errorsWithMetadata,
           updated_at: new Date().toISOString()
         })
         .eq("id", sendJob.id);
+        
+      console.log(`[Process Send Job] Progress: ${messageSuccess} sent, ${messageFailed} failed (${messageSuccess + messageFailed}/${deduplicatedContacts.length} total)`);
     }
 
     // Final status update
     // Check if we processed all contacts
     const totalProcessed = messageSuccess + messageFailed;
-    const totalExpected = deduplicatedContacts.length;
+    const totalExpected = contactsToProcess.length + alreadyProcessed; // Total includes already processed
     
     let finalStatus = "completed";
     if (totalProcessed < totalExpected) {
-      // Not all contacts were processed (likely timeout)
-      finalStatus = "failed";
+      // Not all contacts were processed - keep as "running" so cron can resume
+      finalStatus = "running";
       messageErrors.push({ 
-        error: `Incomplete: Only processed ${totalProcessed} of ${totalExpected} contacts. Job may have timed out.` 
+        error: `Incomplete: Processed ${totalProcessed} of ${totalExpected} contacts. Job will resume on next cron run.`,
+        remaining: totalExpected - totalProcessed
       });
+      console.log(`⏸️ Job ${sendJob.id} incomplete: ${totalProcessed}/${totalExpected} processed. Will resume on next cron run.`);
     } else if (messageSuccess === 0 && messageFailed > 0) {
       finalStatus = "failed";
+    } else {
+      // All contacts processed successfully
+      finalStatus = "completed";
+      console.log(`✅ Job ${sendJob.id} completed: ${messageSuccess} sent, ${messageFailed} failed`);
     }
 
     await supabaseServer
@@ -379,11 +475,12 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
         sent_count: messageSuccess,
         failed_count: messageFailed,
         errors: messageErrors,
-        completed_at: new Date().toISOString()
+        completed_at: finalStatus === "completed" ? new Date().toISOString() : null,
+        updated_at: new Date().toISOString()
       })
       .eq("id", sendJob.id);
 
-    console.log(`✅ Processed send job ${sendJob.id}: ${messageSuccess} sent, ${messageFailed} failed (${totalProcessed}/${totalExpected} total)`);
+    console.log(`✅ Processed send job ${sendJob.id}: ${messageSuccess} sent, ${messageFailed} failed (${totalProcessed}/${totalExpected} total), status: ${finalStatus}`);
   } catch (error: any) {
     console.error(`❌ Error processing send job ${sendJob.id}:`, error);
     await supabaseServer
@@ -500,13 +597,13 @@ export async function GET(request: NextRequest) {
 
     const MAX_JOBS_PER_RUN = 5;
     
-    // Find pending jobs
-    // For cron: process all pending jobs
+    // Find pending AND running jobs (to resume incomplete jobs)
+    // For cron: process all pending/running jobs
     // For manual: only process user's jobs
     let query = supabaseServer
       .from("send_jobs")
       .select("*")
-      .eq("status", "pending")
+      .in("status", ["pending", "running"]) // Also process running jobs to resume them
       .order("started_at", { ascending: true })
       .limit(MAX_JOBS_PER_RUN);
     

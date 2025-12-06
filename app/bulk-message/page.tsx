@@ -1557,7 +1557,12 @@ export default function BulkMessagePage() {
     };
 
     const handleDelete = async () => {
-        if (confirm(`Are you sure you want to delete ${selectedContactIds.length} contacts?`)) {
+        if (selectedContactIds.length === 0) {
+            alert("Please select contacts to delete");
+            return;
+        }
+        
+        if (confirm(`Are you sure you want to delete ${selectedContactIds.length} contact(s)?`)) {
             try {
                 // Delete from database
                 const response = await fetch("/api/facebook/contacts", {
@@ -1569,6 +1574,7 @@ export default function BulkMessagePage() {
                 });
 
                 if (response.ok) {
+                    const data = await response.json();
                     // Remove from UI
                     setContacts(prev => {
                         const updated = prev.filter(c => {
@@ -1583,6 +1589,7 @@ export default function BulkMessagePage() {
                         return updated;
                     });
                     setSelectedContactIds([]);
+                    alert(`Successfully deleted ${data.deletedCount || selectedContactIds.length} contact(s)`);
                 } else {
                     const contentType = response.headers.get("content-type");
                     let error: any = { error: "Unknown error" };
@@ -1601,6 +1608,65 @@ export default function BulkMessagePage() {
                 }
             } catch (error) {
                 console.error("Error deleting contacts:", error);
+                alert("Error deleting contacts. Please try again.");
+            }
+        }
+    };
+
+    const handleDeleteAll = async () => {
+        const totalContacts = filteredContacts.length;
+        if (totalContacts === 0) {
+            alert("No contacts to delete");
+            return;
+        }
+        
+        if (confirm(`Are you sure you want to delete ALL ${totalContacts} contact(s)? This action cannot be undone.`)) {
+            try {
+                // Get all contact IDs from filtered contacts
+                const allContactIds = filteredContacts.map(c => c.id || c.contact_id || c.contactId).filter(id => id !== undefined && id !== null);
+                
+                if (allContactIds.length === 0) {
+                    alert("No valid contact IDs found");
+                    return;
+                }
+                
+                // Delete from database
+                const response = await fetch("/api/facebook/contacts", {
+                    method: "DELETE",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ contactIds: allContactIds }),
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    // Clear all contacts from UI
+                    setContacts([]);
+                    setSelectedContactIds([]);
+                    setFetchingProgress(prevProgress => ({
+                        ...prevProgress,
+                        totalContacts: 0
+                    }));
+                    alert(`Successfully deleted ${data.deletedCount || allContactIds.length} contact(s)`);
+                } else {
+                    const contentType = response.headers.get("content-type");
+                    let error: any = { error: "Unknown error" };
+                    
+                    if (contentType && contentType.includes("application/json")) {
+                        try {
+                            const text = await response.text();
+                            error = text ? JSON.parse(text) : { error: "Unknown error" };
+                        } catch (parseError) {
+                            console.error("Failed to parse error response:", parseError);
+                            error = { error: `Server error (${response.status})` };
+                        }
+                    }
+                    
+                    alert(`Error deleting contacts: ${error.error || "Unknown error"}`);
+                }
+            } catch (error) {
+                console.error("Error deleting all contacts:", error);
                 alert("Error deleting contacts. Please try again.");
             }
         }
@@ -2449,9 +2515,19 @@ export default function BulkMessagePage() {
                                     className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors backdrop-blur-sm"
                                 >
                                     <TrashIcon />
-                                    Delete
+                                    Delete Selected
                                 </button>
                             </div>
+                        )}
+                        {filteredContacts.length > 0 && (
+                            <button
+                                onClick={handleDeleteAll}
+                                className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors backdrop-blur-sm"
+                                title="Delete all contacts (cannot be undone)"
+                            >
+                                <TrashIcon />
+                                Delete All ({filteredContacts.length})
+                            </button>
                         )}
                     </div>
 

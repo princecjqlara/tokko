@@ -607,30 +607,53 @@ export async function DELETE(request: NextRequest) {
 
     // First, try to get the page_ids of contacts that will be deleted
     // The frontend may send either database 'id' or 'contact_id', so we need to handle both
+    // Chunk queries to avoid Supabase IN() limit
+    const CONTACT_FETCH_CHUNK = 200;
     let contactsToDelete: any[] = [];
     let fetchError: any = null;
     
-    // Try by contact_id first (most common case)
-    const { data: contactsByContactId, error: fetchErrorByContactId } = await supabaseServer
-      .from("contacts")
-      .select("id, contact_id, page_id")
-      .eq("user_id", userId)
-      .in("contact_id", contactIds);
+    // Helper to chunk arrays
+    const chunkArray = <T,>(items: T[], chunkSize: number): T[][] => {
+      const chunks: T[][] = [];
+      for (let i = 0; i < items.length; i += chunkSize) {
+        chunks.push(items.slice(i, i + chunkSize));
+      }
+      return chunks;
+    };
     
-    if (!fetchErrorByContactId && contactsByContactId && contactsByContactId.length > 0) {
-      contactsToDelete = contactsByContactId;
-    } else {
-      // If no contacts found by contact_id, try by database id
-      const { data: contactsById, error: fetchErrorById } = await supabaseServer
+    // Try by contact_id first (most common case) - in chunks
+    for (const chunk of chunkArray(contactIds, CONTACT_FETCH_CHUNK)) {
+      const { data: contactsByContactId, error: fetchErrorByContactId } = await supabaseServer
         .from("contacts")
         .select("id, contact_id, page_id")
         .eq("user_id", userId)
-        .in("id", contactIds);
+        .in("contact_id", chunk);
       
-      if (fetchErrorById) {
-        fetchError = fetchErrorById;
-      } else if (contactsById) {
-        contactsToDelete = contactsById;
+      if (fetchErrorByContactId) {
+        console.error(`Error fetching chunk by contact_id:`, fetchErrorByContactId);
+        fetchError = fetchErrorByContactId;
+        break;
+      } else if (contactsByContactId && contactsByContactId.length > 0) {
+        contactsToDelete.push(...contactsByContactId);
+      }
+    }
+    
+    // If no contacts found by contact_id, try by database id - in chunks
+    if (contactsToDelete.length === 0) {
+      for (const chunk of chunkArray(contactIds, CONTACT_FETCH_CHUNK)) {
+        const { data: contactsById, error: fetchErrorById } = await supabaseServer
+          .from("contacts")
+          .select("id, contact_id, page_id")
+          .eq("user_id", userId)
+          .in("id", chunk);
+        
+        if (fetchErrorById) {
+          console.error(`Error fetching chunk by id:`, fetchErrorById);
+          fetchError = fetchErrorById;
+          break;
+        } else if (contactsById) {
+          contactsToDelete.push(...contactsById);
+        }
       }
     }
 
@@ -641,6 +664,13 @@ export async function DELETE(request: NextRequest) {
         { status: 500 }
       );
     }
+    
+    // Remove duplicates
+    const uniqueContacts = new Map();
+    for (const contact of contactsToDelete) {
+      uniqueContacts.set(contact.id, contact);
+    }
+    contactsToDelete = Array.from(uniqueContacts.values());
 
     if (contactsToDelete.length === 0) {
       return NextResponse.json(
