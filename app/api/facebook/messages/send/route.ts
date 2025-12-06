@@ -556,10 +556,15 @@ export async function POST(request: NextRequest) {
       // Send message to each contact on this page
       for (const contact of pageContacts) {
         try {
+          console.log(`[Send] Processing contact: ${contact.contact_name} (${contact.contact_id})`);
+
           // Replace {FirstName} placeholder if present
           let personalizedMessage = message;
           const firstName = contact.contact_name?.split(' ')[0] || 'there';
           personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
+
+          console.log(`[Send] Message text: "${personalizedMessage}"`);
+          console.log(`[Send] Has attachment: ${!!attachment}, URL: ${attachment?.url}`);
 
           // IMPORTANT: Facebook Messenger API Limitation
           // Media and text MUST be sent as 2 separate messages
@@ -570,6 +575,7 @@ export async function POST(request: NextRequest) {
           if (attachment && attachment.url) {
             try {
               const attachmentType = attachment.type || "file";
+              console.log(`[Send] Sending ${attachmentType} to ${contact.contact_name}...`);
 
               const mediaPayload: any = {
                 recipient: {
@@ -611,6 +617,7 @@ export async function POST(request: NextRequest) {
               } else {
                 const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
                 console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
+                console.error(`❌ Full error:`, mediaData);
                 // Continue to send text even if media fails
               }
             } catch (mediaError: any) {
@@ -620,6 +627,7 @@ export async function POST(request: NextRequest) {
           }
 
           // Send text message (always send, even if media was sent)
+          console.log(`[Send] Sending text message to ${contact.contact_name}...`);
           const textPayload: any = {
             recipient: {
               id: contact.contact_id
@@ -651,6 +659,7 @@ export async function POST(request: NextRequest) {
             results.failed++;
             const errorMsg = sendData.error?.message || "Unknown error";
             console.error(`❌ Failed to send text to ${contact.contact_name}:`, errorMsg);
+            console.error(`❌ Full error:`, sendData);
             results.errors.push({
               contact: contact.contact_name,
               page: contact.page_name,
