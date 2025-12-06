@@ -495,11 +495,17 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       totalProcessed,
       remainingContacts,
       contactsToProcessCount: contactsToProcess.length,
-      sentContactIdsCount: sentContactIds.size
+      sentContactIdsCount: sentContactIds.size,
+      messageSuccess,
+      messageFailed
     });
     
+    // If we have no more contacts to process, mark as complete
+    // This handles the case where all remaining contacts were already sent in previous runs
+    const hasRemainingContacts = contactsToProcess.length > 0 && remainingContacts > 0;
+    
     let finalStatus = "completed";
-    if (remainingContacts > 0 && contactsToProcess.length > 0) {
+    if (hasRemainingContacts) {
       // Not all contacts were processed - keep as "running" so cron can resume
       finalStatus = "running";
       const errorsWithMetadata = [
