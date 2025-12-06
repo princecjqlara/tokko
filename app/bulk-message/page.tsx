@@ -137,7 +137,7 @@ export default function BulkMessagePage() {
     const profileDropdownRef = useRef<HTMLDivElement>(null);
     const [scheduledNotice, setScheduledNotice] = useState<{ id: number; scheduledFor: string; total: number } | null>(null);
     const [isCancellingSchedule, setIsCancellingSchedule] = useState(false);
-    
+
     // Send job progress tracking
     const [sendJobProgress, setSendJobProgress] = useState<{
         jobId: number;
@@ -149,7 +149,7 @@ export default function BulkMessagePage() {
         startedAt?: string;
         completedAt?: string;
     } | null>(null);
-    
+
     // Restore job progress from localStorage on mount
     useEffect(() => {
         if (isClient && session?.user?.id) {
@@ -158,7 +158,7 @@ export default function BulkMessagePage() {
                 try {
                     const parsed = JSON.parse(stored);
                     // Only restore if job is still active (not completed/failed)
-                    if (parsed && parsed.jobId && parsed.status && 
+                    if (parsed && parsed.jobId && parsed.status &&
                         parsed.status !== "completed" && parsed.status !== "failed") {
                         setSendJobProgress(parsed);
                     } else {
@@ -171,7 +171,7 @@ export default function BulkMessagePage() {
             }
         }
     }, [isClient, session?.user?.id]);
-    
+
     // Save job progress to localStorage whenever it changes
     useEffect(() => {
         if (isClient && sendJobProgress && session?.user?.id) {
@@ -181,13 +181,13 @@ export default function BulkMessagePage() {
             localStorage.removeItem(`sendJobProgress_${session.user.id}`);
         }
     }, [sendJobProgress, isClient, session?.user?.id]);
-    
+
     // Poll job status when a job is active
     useEffect(() => {
         if (!sendJobProgress || sendJobProgress.status === "completed" || sendJobProgress.status === "failed") {
             return;
         }
-        
+
         const pollInterval = setInterval(async () => {
             try {
                 const response = await fetch(`/api/facebook/messages/send-job-status?jobId=${sendJobProgress.jobId}`);
@@ -205,7 +205,7 @@ export default function BulkMessagePage() {
                             completedAt: data.job.completed_at
                         };
                         setSendJobProgress(updated);
-                        
+
                         // Stop polling if job is complete
                         if (data.job.status === "completed" || data.job.status === "failed") {
                             clearInterval(pollInterval);
@@ -216,10 +216,10 @@ export default function BulkMessagePage() {
                 console.error("Error polling job status:", error);
             }
         }, 3000); // Poll every 3 seconds
-        
+
         return () => clearInterval(pollInterval);
     }, [sendJobProgress?.jobId, sendJobProgress?.status]);
-    
+
     // Real-time fetching state
     const [fetchingProgress, setFetchingProgress] = useState<{
         isFetching: boolean;
@@ -238,7 +238,7 @@ export default function BulkMessagePage() {
         recentContacts: [],
         isCollapsed: false
     });
-    
+
     // Track if fetch is already in progress to prevent reload loops
     const isFetchingRef = useRef(false);
     const hasFetchedRef = useRef(false);
@@ -253,13 +253,13 @@ export default function BulkMessagePage() {
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
     const itemsPerPage = 8;
-    
+
     // Modal states
     const [showReconnectModal, setShowReconnectModal] = useState(false);
     const [pageModalCurrentPage, setPageModalCurrentPage] = useState(1);
     const [connectedPagesCurrentPage, setConnectedPagesCurrentPage] = useState(1);
     const connectedPagesItemsPerPage = 5;
-    
+
     // Page selection states
     const [selectedPageIdsForDisconnect, setSelectedPageIdsForDisconnect] = useState<string[]>([]);
     const [selectedAvailablePageIds, setSelectedAvailablePageIds] = useState<string[]>([]);
@@ -296,7 +296,7 @@ export default function BulkMessagePage() {
         const height = 700;
         const left = (window.screen.width - width) / 2;
         const top = (window.screen.height - height) / 2;
-        
+
         // Use popup callback URL
         const popup = window.open(
             `/api/auth/signin/facebook?callbackUrl=${encodeURIComponent("/api/facebook/callback-popup?popup=true")}`,
@@ -334,7 +334,7 @@ export default function BulkMessagePage() {
         }
         await signOut({ callbackUrl: "/" });
     };
-    
+
     // Handle stop fetching
     const handleStopFetching = () => {
         if (abortControllerRef.current) {
@@ -351,11 +351,11 @@ export default function BulkMessagePage() {
         }));
         setIsLoading(false);
     };
-    
+
     // Handle pause/resume fetching
     const handlePauseResume = async () => {
         const newPausedState = !fetchingProgress.isPaused;
-        
+
         try {
             // Update pause state in database
             const response = await fetch("/api/facebook/contacts/pause", {
@@ -371,7 +371,7 @@ export default function BulkMessagePage() {
                 setFetchingProgress(prev => ({
                     ...prev,
                     isPaused: newPausedState,
-                    message: newPausedState 
+                    message: newPausedState
                         ? "Fetching paused. Click resume to continue."
                         : "Resuming fetch..."
                 }));
@@ -382,7 +382,7 @@ export default function BulkMessagePage() {
                 setFetchingProgress(prev => ({
                     ...prev,
                     isPaused: newPausedState,
-                    message: newPausedState 
+                    message: newPausedState
                         ? "Fetching paused (local). Click resume to continue."
                         : "Resuming fetch..."
                 }));
@@ -394,7 +394,7 @@ export default function BulkMessagePage() {
             setFetchingProgress(prev => ({
                 ...prev,
                 isPaused: newPausedState,
-                message: newPausedState 
+                message: newPausedState
                     ? "Fetching paused (local). Click resume to continue."
                     : "Resuming fetch..."
             }));
@@ -404,7 +404,7 @@ export default function BulkMessagePage() {
     // Auto-fetch pages and contacts when user is signed in (only once)
     // Use stable userId to prevent dependency array size changes
     const userId = session?.user?.id || null;
-    
+
     // Define fetchContactsRealtime outside useEffect so it can be called from multiple places
     const fetchContactsRealtime = React.useCallback(async () => {
         const storageKey = userId ? `hasFetched_${userId}` : null;
@@ -414,7 +414,7 @@ export default function BulkMessagePage() {
                 localStorage.setItem(storageKey, 'true');
             }
         };
-        
+
         // Prevent multiple simultaneous calls - check both refs
         if (isFetchingRef.current || isConnectingRef.current) {
             console.log("[Frontend] fetchContactsRealtime already in progress, skipping duplicate call", {
@@ -423,23 +423,23 @@ export default function BulkMessagePage() {
             });
             return;
         }
-        
+
         // Abort any existing connection first
         if (abortControllerRef.current) {
             console.log("[Frontend] Aborting existing connection before starting new one");
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
         }
-        
+
         // Mark as connecting immediately to prevent race conditions
         isConnectingRef.current = true;
         isFetchingRef.current = true;
         hasFetchedRef.current = false;
-        
+
         // Get current contact count before starting - preserve existing count
         const currentContactCount = contacts.length || fetchingProgress.totalContacts || 0;
         const initialTotal = Math.max(currentContactCount, fetchingProgress.totalContacts || 0, contacts.length || 0);
-        
+
         setIsLoading(true);
         setFetchingProgress(prev => ({
             ...prev,
@@ -447,15 +447,15 @@ export default function BulkMessagePage() {
             // NEVER reset totalContacts to 0 if we already have contacts - always preserve the count
             totalContacts: Math.max(initialTotal, prev.totalContacts),
             recentContacts: prev.recentContacts || [],
-            message: currentContactCount > 0 
+            message: currentContactCount > 0
                 ? `Resuming fetch... (${currentContactCount} contacts already loaded)`
                 : "Starting to fetch contacts..."
         }));
-        
+
         // Load existing contacts from database first (but still use stream for real-time updates)
-        // Skip if we're already loading contacts or fetching
-        if (isLoadingContactsRef.current || isFetchingRef.current || fetchingProgress.isFetching) {
-            console.log("[Frontend] Skipping initial contact load - already loading or fetching");
+        // Only skip if we're already loading contacts (not checking isFetchingRef here since we just set it)
+        if (isLoadingContactsRef.current) {
+            console.log("[Frontend] Skipping initial contact load - already loading contacts");
         } else {
             isLoadingContactsRef.current = true;
             try {
@@ -490,9 +490,9 @@ export default function BulkMessagePage() {
                     } catch {
                         errorData = { error: errorText };
                     }
-                    
+
                     console.error("[Frontend] Error loading contacts:", errorData);
-                    
+
                     // Check if it's a rate limit error
                     if (errorData.error === "Facebook API rate limit reached" || errorData.details?.includes("rate limit")) {
                         setFetchingProgress(prev => ({
@@ -503,6 +503,7 @@ export default function BulkMessagePage() {
                         setIsLoading(false);
                         isFetchingRef.current = false;
                         isLoadingContactsRef.current = false;
+                        isConnectingRef.current = false;
                         return;
                     }
                 }
@@ -531,17 +532,17 @@ export default function BulkMessagePage() {
                     fetchUrl += `?pageId=${selectedPageData.id}`;
                 }
             }
-            
+
             const response = await fetch(fetchUrl, {
                 signal: abortControllerRef.current.signal
             });
-            
+
             if (!response.ok) {
                 const errorText = await response.text();
                 console.error("[Frontend] Stream response not OK:", response.status, errorText);
                 throw new Error(`Failed to start stream: ${response.status}`);
             }
-            
+
             console.log("[Frontend] Stream connection established. Reading data...");
             const reader = response.body?.getReader();
             const decoder = new TextDecoder();
@@ -565,7 +566,7 @@ export default function BulkMessagePage() {
                     if (line.startsWith("data: ")) {
                         try {
                             const data = JSON.parse(line.slice(6));
-                            
+
                             switch (data.type) {
                                 case "status":
                                     setFetchingProgress(prev => ({
@@ -579,21 +580,21 @@ export default function BulkMessagePage() {
                                         message: data.message || prev.message
                                     }));
                                     break;
-                                
+
                                 case "page_progress":
                                     // Update progress bar during page processing without changing page name
                                     setFetchingProgress(prev => ({
                                         ...prev,
                                         totalContacts: Math.max(data.totalContacts || 0, prev.totalContacts, contacts.length),
                                         // Update page number to keep progress bar accurate
-                                        currentPageNumber: data.currentPage !== undefined 
+                                        currentPageNumber: data.currentPage !== undefined
                                             ? Math.max(data.currentPage, prev.currentPageNumber || 0)
                                             : prev.currentPageNumber,
                                         totalPages: data.totalPages || prev.totalPages,
                                         message: data.message || prev.message
                                     }));
                                     break;
-                                
+
                                 case "pages_fetched":
                                     setFetchingProgress(prev => ({
                                         ...prev,
@@ -601,21 +602,21 @@ export default function BulkMessagePage() {
                                         message: data.message
                                     }));
                                     break;
-                                
+
                                 case "page_start":
                                     // Only update page info when a new page actually starts
                                     setFetchingProgress(prev => ({
                                         ...prev,
                                         currentPage: data.pageName || prev.currentPage,
                                         // NEVER decrease page number - only move forward
-                                        currentPageNumber: data.currentPage !== undefined 
+                                        currentPageNumber: data.currentPage !== undefined
                                             ? Math.max(data.currentPage, prev.currentPageNumber || 0)
                                             : prev.currentPageNumber,
                                         totalPages: data.totalPages || prev.totalPages,
                                         message: data.message || prev.message
                                     }));
                                     break;
-                                
+
                                 case "page_conversations":
                                     console.log("[Frontend] Page conversations:", data.conversationsCount, "in", data.pageName);
                                     setFetchingProgress(prev => ({
@@ -623,39 +624,39 @@ export default function BulkMessagePage() {
                                         message: `Found ${data.conversationsCount} conversations in ${data.pageName}`
                                     }));
                                     break;
-                                
+
                                 case "contact":
                                     // Add contact immediately to the list
                                     setContacts(prev => {
                                         // Avoid duplicates based on contact_id and page_id
-                                        const exists = prev.find(c => 
-                                            (c.id === data.contact.id || c.contact_id === data.contact.id) && 
+                                        const exists = prev.find(c =>
+                                            (c.id === data.contact.id || c.contact_id === data.contact.id) &&
                                             (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId)
                                         );
                                         if (exists) {
                                             // Update existing contact with new data
-                                            return prev.map(c => 
-                                                ((c.id === data.contact.id || c.contact_id === data.contact.id) && 
-                                                 (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId))
+                                            return prev.map(c =>
+                                                ((c.id === data.contact.id || c.contact_id === data.contact.id) &&
+                                                    (c.pageId === data.contact.pageId || c.page_id === data.contact.pageId))
                                                     ? { ...c, ...data.contact }
                                                     : c
                                             );
                                         }
                                         return [data.contact, ...prev];
                                     });
-                                    
+
                                     // Track recent contacts for animation
                                     recentContacts.unshift(data.contact);
                                     if (recentContacts.length > 5) recentContacts.pop();
-                                    
+
                                     // Update progress with contact count - log every 100 contacts
                                     if (data.totalContacts % 100 === 0) {
                                         console.log("[Frontend] Total contacts so far:", data.totalContacts);
                                     }
-                                    
+
                                     // Calculate the maximum total to ensure count never decreases
                                     const streamTotal = Math.max(data.totalContacts || 0, contacts.length);
-                                    
+
                                     setFetchingProgress(prev => {
                                         const finalTotal = Math.max(streamTotal, prev.totalContacts, contacts.length);
                                         // DON'T update page info from contact events - only update count
@@ -669,9 +670,9 @@ export default function BulkMessagePage() {
                                             recentContacts: [...recentContacts],
                                             // Only update message periodically to avoid constant UI flicker
                                             // Keep the current page name stable - don't change it on every contact
-                                            message: shouldUpdateMessage && prev.currentPage 
+                                            message: shouldUpdateMessage && prev.currentPage
                                                 ? `Processing ${prev.currentPage}... Found ${finalTotal} contacts so far...`
-                                                : prev.message || (prev.currentPage 
+                                                : prev.message || (prev.currentPage
                                                     ? `Processing ${prev.currentPage}...`
                                                     : `Found ${finalTotal} contacts so far...`),
                                             // Don't update page number or page name from contact events
@@ -679,7 +680,7 @@ export default function BulkMessagePage() {
                                             ...(data.totalPages !== undefined && { totalPages: data.totalPages })
                                         };
                                     });
-                                    
+
                                     // Extract tags
                                     setTags(prev => {
                                         const allTags = new Set(prev);
@@ -687,14 +688,14 @@ export default function BulkMessagePage() {
                                         return Array.from(allTags);
                                     });
                                     break;
-                                
+
                                 case "page_complete":
                                     // Ensure total never decreases
                                     const pageCompleteTotal = Math.max(data.totalContacts || 0, contacts.length);
                                     setFetchingProgress(prev => {
                                         const finalTotal = Math.max(pageCompleteTotal, prev.totalContacts, contacts.length);
                                         // NEVER decrease page number - only move forward
-                                        const newPageNumber = data.currentPage !== undefined 
+                                        const newPageNumber = data.currentPage !== undefined
                                             ? Math.max(data.currentPage, prev.currentPageNumber || 0)
                                             : prev.currentPageNumber;
                                         return {
@@ -706,14 +707,14 @@ export default function BulkMessagePage() {
                                         };
                                     });
                                     break;
-                                
+
                                 case "page_error":
                                     setFetchingProgress(prev => ({
                                         ...prev,
                                         message: `⚠ ${data.pageName}: ${data.error}`
                                     }));
                                     break;
-                                
+
                                 case "complete":
                                     // Update contacts count accurately from the final sync result
                                     const finalTotal = Math.max(data.totalContacts || 0, contacts.length);
@@ -752,7 +753,7 @@ export default function BulkMessagePage() {
                                         }
                                     }, 1000); // Wait 1 second after sync completes before first check
                                     break;
-                                
+
                                 case "error":
                                     setFetchingProgress(prev => ({
                                         ...prev,
@@ -801,29 +802,29 @@ export default function BulkMessagePage() {
             abortControllerRef.current = null;
         }
     }, [userId, selectedPage, pageData]); // Removed contacts.length and fetchingProgress.totalContacts to prevent circular dependency
-    
+
     // Store the latest fetchContactsRealtime in a ref so it can be called from useEffect without dependency issues
     useEffect(() => {
         fetchContactsRealtimeRef.current = fetchContactsRealtime;
     }, [fetchContactsRealtime]);
-    
+
     useEffect(() => {
         if (status !== "authenticated" || !session || !userId) {
             console.log("[Frontend] Not authenticated yet, skipping...");
             return;
         }
-        
+
         // Clear any pending debounce timeout
         if (contactLoadTimeoutRef.current) {
             clearTimeout(contactLoadTimeoutRef.current);
             contactLoadTimeoutRef.current = null;
         }
-        
+
         // Debounce contact loading - only load if it's been more than 2 seconds since last load
         const now = Date.now();
         const timeSinceLastLoad = now - lastContactLoadTimeRef.current;
         const DEBOUNCE_DELAY = 2000; // 2 seconds
-        
+
         if (timeSinceLastLoad < DEBOUNCE_DELAY) {
             console.log(`[Frontend] Debouncing contact load - only ${timeSinceLastLoad}ms since last load`);
             // Schedule a delayed load
@@ -837,7 +838,7 @@ export default function BulkMessagePage() {
             }, DEBOUNCE_DELAY - timeSinceLastLoad);
             return;
         }
-        
+
         // Always load existing contacts from database first on mount/refresh
         // BUT skip if we're currently fetching (to avoid resetting the UI)
         const loadExistingContacts = async () => {
@@ -847,13 +848,13 @@ export default function BulkMessagePage() {
                 console.log("[Frontend] STRICT: Skipping contact load - fetch/connect in progress");
                 return contacts.length;
             }
-            
+
             // Check if we already have contacts - don't reload unnecessarily
             if (contacts.length > 0) {
                 console.log(`[Frontend] Already have ${contacts.length} contacts, skipping reload`);
                 return contacts.length;
             }
-            
+
             isLoadingContactsRef.current = true;
             lastContactLoadTimeRef.current = Date.now();
             try {
@@ -895,7 +896,7 @@ export default function BulkMessagePage() {
             }
             return 0;
         };
-        
+
         // First, check if there's a running job in the database
         const checkAndReconnect = async () => {
             try {
@@ -903,7 +904,7 @@ export default function BulkMessagePage() {
                 if (jobResponse.ok) {
                     const jobData = await jobResponse.json();
                     const job = jobData.job;
-                    
+
                     // If there's a running or paused job, we should reconnect
                     if (job && (job.status === "running" || job.status === "paused")) {
                         console.log("[Frontend] Found active job, will reconnect to stream");
@@ -977,7 +978,7 @@ export default function BulkMessagePage() {
                                 message: job.message || prev.message
                             }));
                         }
-                        
+
                         // Reconnect to stream if job is running and not paused
                         // Only reconnect if we're NOT already fetching (to prevent duplicate connections)
                         if (job.status === "running" && !job.is_paused && !isFetchingRef.current) {
@@ -1006,17 +1007,17 @@ export default function BulkMessagePage() {
             }
             return false;
         };
-        
+
         // Check localStorage to see if we've already fetched for this user
         const storageKey = `hasFetched_${userId}`;
-        
+
         // Load existing contacts first
         loadExistingContacts().then(existingCount => {
             const storedHasFetched = userId ? localStorage.getItem(storageKey) === 'true' : false;
             if (storedHasFetched && !hasFetchedRef.current) {
                 hasFetchedRef.current = true;
             }
-            
+
             console.log("[Frontend] useEffect triggered:", {
                 status,
                 userId,
@@ -1025,13 +1026,13 @@ export default function BulkMessagePage() {
                 storedHasFetched,
                 existingContactsCount: existingCount
             });
-            
+
             // Prevent multiple simultaneous fetches
             if (isFetchingRef.current) {
                 console.log("[Frontend] Fetch already in progress, skipping...");
                 return;
             }
-            
+
             // Check for running job first (before checking hasFetchedRef)
             checkAndReconnect().then(shouldReconnect => {
                 // Only allow auto-fetch if:
@@ -1040,7 +1041,7 @@ export default function BulkMessagePage() {
                 // 3. No contacts exist in database AND no contacts loaded in UI
                 const hasContacts = existingCount > 0 || contacts.length > 0;
                 const allowAutoFetch = shouldReconnect || (!storedHasFetched && !hasContacts) || (existingCount === 0 && contacts.length === 0);
-                
+
                 if (shouldReconnect) {
                     console.log("[Frontend] Reconnecting to active job...");
                 } else if (!allowAutoFetch) {
@@ -1065,7 +1066,7 @@ export default function BulkMessagePage() {
                         reason: shouldReconnect ? 'reconnecting' : (!storedHasFetched ? 'first time' : 'no contacts')
                     });
                 }
-                
+
                 // Now proceed with fetching if needed
                 if (status === "authenticated" && session) {
                     let hasStartedStream = false;
@@ -1093,7 +1094,7 @@ export default function BulkMessagePage() {
                         if (pagesResponse.ok) {
                             return pagesResponse.json().then(pagesData => {
                                 fetchedPages = pagesData.pages || [];
-                                
+
                                 // All fetched pages are automatically connected
                                 const allPageIds = fetchedPages.map((p: any) => p.id);
                                 setConnectedPageIds(allPageIds);
@@ -1101,7 +1102,7 @@ export default function BulkMessagePage() {
                                 setPageData(fetchedPages);
                                 const pageNames = ["All Pages", ...fetchedPages.map((p: any) => p.name)];
                                 setPages(pageNames);
-                                
+
                                 // Then fetch contacts in real-time (only if not already fetching and should fetch)
                                 maybeStartStream();
                             });
@@ -1123,7 +1124,7 @@ export default function BulkMessagePage() {
                 }
             });
         });
-        
+
         // Cleanup: clear any pending debounce timeout
         return () => {
             if (contactLoadTimeoutRef.current) {
@@ -1132,18 +1133,18 @@ export default function BulkMessagePage() {
             }
         };
     }, [status, userId]); // Removed fetchContactsRealtime from dependencies - use ref instead to avoid re-runs
-    
+
     // Poll for job status and update UI (but don't trigger new connections)
     useEffect(() => {
         if (status !== "authenticated" || !userId) return;
-        
+
         const pollJobStatus = async () => {
             try {
                 const response = await fetch("/api/facebook/contacts/pause");
                 if (response.ok) {
                     const contentType = response.headers.get("content-type");
                     let data: any;
-                    
+
                     if (contentType && contentType.includes("application/json")) {
                         try {
                             const text = await response.text();
@@ -1156,9 +1157,9 @@ export default function BulkMessagePage() {
                         console.error("Non-JSON response from pause API");
                         return;
                     }
-                    
+
                     const job = data.job;
-                    
+
                     if (job && (job.status === "running" || job.status === "paused")) {
                         // Only update UI if we're not already fetching (to avoid conflicts)
                         if (!isFetchingRef.current) {
@@ -1179,7 +1180,7 @@ export default function BulkMessagePage() {
                                 totalPages: job.total_pages || prev.totalPages,
                                 message: job.message || "Fetching in background..."
                             }));
-                            
+
                             // Sync pause state
                             isPausedRef.current = job.is_paused || false;
                         } else {
@@ -1189,12 +1190,12 @@ export default function BulkMessagePage() {
                                 setFetchingProgress(prev => ({
                                     ...prev,
                                     isPaused: job.is_paused || false,
-                                    message: job.is_paused 
+                                    message: job.is_paused
                                         ? "Fetching paused. Click resume to continue."
                                         : prev.message
                                 }));
                             }
-                            
+
                             // Update progress from job (but don't override if stream is sending updates)
                             // Always update, but never decrease the count - preserve maximum
                             if (job.total_contacts !== undefined && job.total_contacts !== null) {
@@ -1244,27 +1245,27 @@ export default function BulkMessagePage() {
                 console.error("[Frontend] Error polling job status:", error);
             }
         };
-        
+
         // Poll every 10 seconds (reduced frequency to avoid conflicts and excessive requests)
         const interval = setInterval(pollJobStatus, 10000);
-        
+
         // Poll immediately
         pollJobStatus();
-        
+
         return () => clearInterval(interval);
     }, [status, userId]); // Removed fetchingProgress from deps to avoid re-triggering
-    
+
     // Manual trigger for background fetch
     const handleStartBackgroundFetch = async () => {
         if (isFetchingRef.current) {
             console.log("Fetch already in progress");
             return;
         }
-        
+
         // Reset refs to allow new fetch
         hasFetchedRef.current = false;
         isFetchingRef.current = false;
-        
+
         // Trigger background job (server-side)
         try {
             const response = await fetch("/api/facebook/contacts/background", {
@@ -1283,16 +1284,16 @@ export default function BulkMessagePage() {
     // Polls every 3 seconds after sync completes (as requested)
     useEffect(() => {
         if (status !== "authenticated" || !session) return;
-        
+
         let pollCount = 0;
         let lastJobStatus: string | null = null;
-        
+
         // Always set up polling - it will check hasFetchedRef inside to determine if it should run
         // This ensures polling starts automatically when sync completes
         let pollInterval = setInterval(async () => {
             try {
                 pollCount++;
-                
+
                 // Only check if we've completed a sync and we're not currently fetching
                 // But allow polling even if initial sync hasn't completed (for debugging)
                 if (isFetchingRef.current || fetchingProgress.isFetching) {
@@ -1311,7 +1312,7 @@ export default function BulkMessagePage() {
                     const jobData = await jobResponse.json();
                     const job = jobData.job;
                     const currentStatus = job?.status || "none";
-                    
+
                     // Log status changes for debugging
                     if (currentStatus !== lastJobStatus) {
                         console.log(`[Frontend] Job status changed: ${lastJobStatus} → ${currentStatus}`, {
@@ -1321,7 +1322,7 @@ export default function BulkMessagePage() {
                         });
                         lastJobStatus = currentStatus;
                     }
-                    
+
                     // If there's a pending job triggered by webhook, start fetching immediately
                     if (job && job.status === "pending" && !isFetchingRef.current && !fetchingProgress.isFetching) {
                         console.log("[Frontend] 🚀 New message detected, starting immediate auto-fetch...", {
@@ -1403,15 +1404,15 @@ export default function BulkMessagePage() {
     const filteredContacts = useMemo(() => {
         return contacts.filter((contact) => {
             const matchesTag = selectedTag === "All" || (contact.tags && contact.tags.includes(selectedTag));
-            
+
             // Page filtering: "All Pages" shows everything, otherwise filter by selected page
             // Check both contact.page and contact.page_name for compatibility
             const contactPageName = contact.page || contact.page_name || contact.pageName;
             const matchesPage = selectedPage === "All Pages" || contactPageName === selectedPage;
-            
+
             const matchesSearch = contact.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
                 contact.role?.toLowerCase().includes(searchQuery.toLowerCase());
-            
+
             // Date filtering: Match if contact has activity (message or conversation) on that date
             // Use lastContactMessageDate if available (contact sent message), otherwise use date (conversation date)
             const contactMessageDate = contact.lastContactMessageDate || contact.date;
@@ -1420,7 +1421,7 @@ export default function BulkMessagePage() {
             return matchesTag && matchesSearch && matchesPage && matchesDate;
         });
     }, [selectedTag, selectedPage, searchQuery, dateFilter, contacts, tags]);
-    
+
     // Update pages list from contacts when contacts change
     useEffect(() => {
         const uniquePages = new Set<string>(["All Pages"]);
@@ -1439,63 +1440,63 @@ export default function BulkMessagePage() {
         (currentPage - 1) * itemsPerPage,
         currentPage * itemsPerPage
     );
-    
+
     // Modal computed values
     const filteredAvailablePages = useMemo(() => {
-        return availablePages.filter((page: any) => 
+        return availablePages.filter((page: any) =>
             page.name.toLowerCase().includes(pageSearchQuery.toLowerCase())
         );
     }, [availablePages, pageSearchQuery]);
-    
+
     const modalItemsPerPage = 5;
     const modalTotalPages = Math.ceil(filteredAvailablePages.length / modalItemsPerPage);
     const paginatedModalPages = filteredAvailablePages.slice(
         (pageModalCurrentPage - 1) * modalItemsPerPage,
         pageModalCurrentPage * modalItemsPerPage
     );
-    
+
     // Page selection functions
     const clearConnectedPageSelection = () => {
         setSelectedPageIdsForDisconnect([]);
     };
-    
+
     const selectAllConnectedPages = () => {
         setSelectedPageIdsForDisconnect([...connectedPageIds]);
     };
-    
+
     const toggleConnectedPageSelection = (pageId: string) => {
-        setSelectedPageIdsForDisconnect(prev => 
-            prev.includes(pageId) 
+        setSelectedPageIdsForDisconnect(prev =>
+            prev.includes(pageId)
                 ? prev.filter(id => id !== pageId)
                 : [...prev, pageId]
         );
     };
-    
+
     const handleBulkDisconnect = async () => {
         if (selectedPageIdsForDisconnect.length === 0) return;
         // Implementation would go here
         console.log("Bulk disconnect:", selectedPageIdsForDisconnect);
         setSelectedPageIdsForDisconnect([]);
     };
-    
+
     const clearAvailablePageSelection = () => {
         setSelectedAvailablePageIds([]);
     };
-    
+
     const selectAllAvailablePages = () => {
         const unconnectedPages = filteredAvailablePages
             .filter((p: any) => !connectedPageIds.includes(p.id))
             .map((p: any) => p.id);
         setSelectedAvailablePageIds(unconnectedPages);
     };
-    
+
     const handleBulkConnectAvailablePages = async () => {
         if (selectedAvailablePageIds.length === 0) return;
         // Implementation would go here
         console.log("Bulk connect:", selectedAvailablePageIds);
         setSelectedAvailablePageIds([]);
     };
-    
+
     const handleBulkDeleteAvailablePages = async () => {
         if (selectedAvailablePageIds.length === 0) return;
         // Implementation would go here
@@ -1561,7 +1562,7 @@ export default function BulkMessagePage() {
             alert("Please select contacts to delete");
             return;
         }
-        
+
         if (confirm(`Are you sure you want to delete ${selectedContactIds.length} contact(s)?`)) {
             try {
                 // Delete from database
@@ -1593,7 +1594,7 @@ export default function BulkMessagePage() {
                 } else {
                     const contentType = response.headers.get("content-type");
                     let error: any = { error: "Unknown error" };
-                    
+
                     if (contentType && contentType.includes("application/json")) {
                         try {
                             const text = await response.text();
@@ -1603,7 +1604,7 @@ export default function BulkMessagePage() {
                             error = { error: `Server error (${response.status})` };
                         }
                     }
-                    
+
                     alert(`Error deleting contacts: ${error.error || "Unknown error"}`);
                 }
             } catch (error) {
@@ -1619,17 +1620,17 @@ export default function BulkMessagePage() {
             alert("No contacts to delete");
             return;
         }
-        
+
         if (confirm(`Are you sure you want to delete ALL ${totalContacts} contact(s)? This action cannot be undone.`)) {
             try {
                 // Get all contact IDs from filtered contacts
                 const allContactIds = filteredContacts.map(c => c.id || c.contact_id || c.contactId).filter(id => id !== undefined && id !== null);
-                
+
                 if (allContactIds.length === 0) {
                     alert("No valid contact IDs found");
                     return;
                 }
-                
+
                 // Delete from database
                 const response = await fetch("/api/facebook/contacts", {
                     method: "DELETE",
@@ -1652,7 +1653,7 @@ export default function BulkMessagePage() {
                 } else {
                     const contentType = response.headers.get("content-type");
                     let error: any = { error: "Unknown error" };
-                    
+
                     if (contentType && contentType.includes("application/json")) {
                         try {
                             const text = await response.text();
@@ -1662,7 +1663,7 @@ export default function BulkMessagePage() {
                             error = { error: `Server error (${response.status})` };
                         }
                     }
-                    
+
                     alert(`Error deleting contacts: ${error.error || "Unknown error"}`);
                 }
             } catch (error) {
@@ -1729,7 +1730,7 @@ export default function BulkMessagePage() {
                 }
                 return;
             }
-            
+
             // Validate file type (images, videos, audio, and common document types)
             const validMediaTypes = [
                 // Images
@@ -1747,7 +1748,7 @@ export default function BulkMessagePage() {
                 "application/vnd.ms-powerpoint",
                 "application/vnd.openxmlformats-officedocument.presentationml.presentation" // .pptx
             ];
-            
+
             if (!validMediaTypes.includes(file.type)) {
                 alert("Unsupported file type. Please use images, videos, audio, or documents (PDF, DOC, XLS, PPT).");
                 if (fileInputRef.current) {
@@ -1755,7 +1756,7 @@ export default function BulkMessagePage() {
                 }
                 return;
             }
-            
+
             setAttachedFile(file);
         }
     };
@@ -1779,7 +1780,17 @@ export default function BulkMessagePage() {
             return;
         }
 
-        setActiveSends(prev => prev + 1);
+        // Prevent multiple simultaneous sends - check BEFORE incrementing
+        if (activeSends > 0) {
+            console.warn("[Frontend] Send already in progress, ignoring duplicate call. Active sends:", activeSends);
+            return;
+        }
+
+        // Increment active sends counter
+        setActiveSends(prev => {
+            console.log("[Frontend] Starting send, incrementing activeSends from", prev, "to", prev + 1);
+            return prev + 1;
+        });
 
         try {
             // Upload file if attached
@@ -1789,7 +1800,7 @@ export default function BulkMessagePage() {
                     // Upload file to storage
                     const uploadFormData = new FormData();
                     uploadFormData.append("file", attachedFile);
-                    
+
                     const uploadResponse = await fetch("/api/upload", {
                         method: "POST",
                         body: uploadFormData,
@@ -1798,7 +1809,7 @@ export default function BulkMessagePage() {
                     // Check if response has content before parsing
                     const contentType = uploadResponse.headers.get("content-type");
                     let uploadData;
-                    
+
                     if (contentType && contentType.includes("application/json")) {
                         const text = await uploadResponse.text();
                         if (!text || text.trim() === "") {
@@ -1814,7 +1825,7 @@ export default function BulkMessagePage() {
                         const text = await uploadResponse.text();
                         const statusText = uploadResponse.statusText || "Unknown";
                         const status = uploadResponse.status || "Unknown";
-                        
+
                         // Log full response for debugging
                         console.error("Non-JSON response received:", {
                             status,
@@ -1823,7 +1834,7 @@ export default function BulkMessagePage() {
                             responseText: text.substring(0, 500),
                             headers: Object.fromEntries(uploadResponse.headers.entries())
                         });
-                        
+
                         // Try to extract error message from HTML if it's an error page
                         let errorMessage = `Server returned non-JSON response (Status: ${status} ${statusText})`;
                         if (text) {
@@ -1835,7 +1846,7 @@ export default function BulkMessagePage() {
                                 errorMessage += `: ${text}`;
                             }
                         }
-                        
+
                         throw new Error(errorMessage);
                     }
 
@@ -1865,14 +1876,14 @@ export default function BulkMessagePage() {
                 const [datePart, timePart] = scheduleDate.split('T');
                 const [year, month, day] = datePart.split('-').map(Number);
                 const [hours, minutes] = (timePart || '00:00').split(':').map(Number);
-                
+
                 // Create a date object treating the input as Philippine time (UTC+8)
                 // Philippine time is UTC+8, so we subtract 8 hours to get UTC
                 const philippineDate = new Date(Date.UTC(year, month - 1, day, hours, minutes, 0, 0));
                 // Subtract 8 hours to convert from Philippine time (UTC+8) to UTC
                 const utcDate = new Date(philippineDate.getTime() - (8 * 60 * 60 * 1000));
                 scheduleDateISO = utcDate.toISOString();
-                
+
                 console.log('[Schedule] Input:', scheduleDate, '→ Philippine time:', philippineDate.toISOString(), '→ UTC:', scheduleDateISO);
             }
 
@@ -1892,7 +1903,7 @@ export default function BulkMessagePage() {
             // Check content-type before parsing JSON
             const contentType = response.headers.get("content-type");
             let data: any;
-            
+
             if (contentType && contentType.includes("application/json")) {
                 try {
                     const text = await response.text();
@@ -1912,7 +1923,7 @@ export default function BulkMessagePage() {
                 const text = await response.text();
                 const statusText = response.statusText || "Unknown";
                 const status = response.status || "Unknown";
-                
+
                 console.error("Non-JSON response received from send API:", {
                     status,
                     statusText,
@@ -1920,14 +1931,14 @@ export default function BulkMessagePage() {
                     responseText: text.substring(0, 500),
                     headers: Object.fromEntries(response.headers.entries())
                 });
-                
+
                 // Try to extract error message from HTML if it's an error page
                 let errorMessage = `Server returned non-JSON response (Status: ${status} ${statusText})`;
                 if (text) {
                     // Try to find error message in HTML
-                    const errorMatch = text.match(/<title>(.*?)<\/title>/i) || 
-                                     text.match(/<h1>(.*?)<\/h1>/i) ||
-                                     text.match(/An error (occurred|o[^<]*)/i);
+                    const errorMatch = text.match(/<title>(.*?)<\/title>/i) ||
+                        text.match(/<h1>(.*?)<\/h1>/i) ||
+                        text.match(/An error (occurred|o[^<]*)/i);
                     if (errorMatch) {
                         errorMessage = errorMatch[1] || errorMatch[0];
                     } else if (text.length < 200) {
@@ -1936,7 +1947,7 @@ export default function BulkMessagePage() {
                         errorMessage = `Server error (${status} ${statusText}). Please try again.`;
                     }
                 }
-                
+
                 throw new Error(errorMessage);
             }
 
@@ -2036,7 +2047,7 @@ export default function BulkMessagePage() {
             // Check content-type before parsing JSON
             const contentType = response.headers.get("content-type");
             let data: any;
-            
+
             if (contentType && contentType.includes("application/json")) {
                 try {
                     const text = await response.text();
@@ -2053,17 +2064,17 @@ export default function BulkMessagePage() {
                 const text = await response.text();
                 const statusText = response.statusText || "Unknown";
                 const status = response.status || "Unknown";
-                
+
                 console.error("Non-JSON response received from cancel-scheduled API:", {
                     status,
                     statusText,
                     contentType,
                     responseText: text.substring(0, 500)
                 });
-                
+
                 throw new Error(`Server error (${status} ${statusText}). Please try again.`);
             }
-            
+
             if (response.ok && data.success) {
                 setScheduledNotice(null);
                 alert("Scheduled message cancelled successfully");
@@ -2138,16 +2149,16 @@ export default function BulkMessagePage() {
                                 <span className="text-sm font-medium text-white">
                                     {session.user?.name || session.user?.email}
                                 </span>
-                                <svg 
-                                    className={`w-4 h-4 text-zinc-400 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`} 
-                                    fill="none" 
-                                    viewBox="0 0 24 24" 
+                                <svg
+                                    className={`w-4 h-4 text-zinc-400 transition-transform ${showProfileDropdown ? 'rotate-180' : ''}`}
+                                    fill="none"
+                                    viewBox="0 0 24 24"
                                     stroke="currentColor"
                                 >
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
                                 </svg>
                             </button>
-                            
+
                             {showProfileDropdown && (
                                 <div className="absolute right-0 top-full mt-2 w-56 rounded-xl bg-zinc-900 border border-white/10 shadow-2xl z-50 overflow-hidden">
                                     <div className="p-2">
@@ -2158,7 +2169,7 @@ export default function BulkMessagePage() {
                                                 <p className="text-xs text-zinc-500 truncate mt-0.5">{session.user.email}</p>
                                             )}
                                         </div>
-                                        
+
                                         <button
                                             onClick={() => {
                                                 hasFetchedRef.current = false;
@@ -2178,7 +2189,7 @@ export default function BulkMessagePage() {
                                             </svg>
                                             <span>{fetchingProgress.isFetching ? "Syncing..." : "Sync Contacts"}</span>
                                         </button>
-                                        
+
                                         <button
                                             onClick={handleReconnect}
                                             className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-zinc-300 hover:bg-indigo-500/20 hover:text-indigo-400 rounded-lg transition-colors text-left mt-1"
@@ -2188,7 +2199,7 @@ export default function BulkMessagePage() {
                                             </svg>
                                             <span>Reconnect Facebook</span>
                                         </button>
-                                        
+
                                         <button
                                             onClick={handleSignOut}
                                             className="w-full flex items-center gap-3 px-3 py-2.5 text-sm text-red-400 hover:bg-red-500/20 hover:text-red-300 rounded-lg transition-colors text-left mt-1"
@@ -2210,7 +2221,7 @@ export default function BulkMessagePage() {
                                 const height = 700;
                                 const left = (window.screen.width - width) / 2;
                                 const top = (window.screen.height - height) / 2;
-                                
+
                                 // Use popup callback URL
                                 const popup = window.open(
                                     `/api/auth/signin/facebook?callbackUrl=${encodeURIComponent("/api/facebook/callback-popup?popup=true")}`,
@@ -2239,9 +2250,9 @@ export default function BulkMessagePage() {
                             }}
                             className="flex items-center gap-2 rounded-full bg-[#1877F2] hover:bg-[#166fe5] px-4 py-2 text-sm font-semibold text-white transition-all shadow-lg shadow-blue-900/20 hover:scale-105 active:scale-95"
                         >
-                        <FacebookIcon />
-                        <span>Sign in with Facebook</span>
-                    </button>
+                            <FacebookIcon />
+                            <span>Sign in with Facebook</span>
+                        </button>
                     )}
                 </div>
             </header>
@@ -2272,9 +2283,9 @@ export default function BulkMessagePage() {
                         <div className="flex items-center justify-between mb-3">
                             <div className="font-semibold text-green-200">
                                 {sendJobProgress.status === "completed" ? "✅ Messages sent successfully!" :
-                                 sendJobProgress.status === "failed" ? "❌ Sending failed" :
-                                 sendJobProgress.status === "running" ? "📤 Sending messages..." :
-                                 "⏳ Queued for sending"}
+                                    sendJobProgress.status === "failed" ? "❌ Sending failed" :
+                                        sendJobProgress.status === "running" ? "📤 Sending messages..." :
+                                            "⏳ Queued for sending"}
                             </div>
                             <button
                                 onClick={() => {
@@ -2289,7 +2300,7 @@ export default function BulkMessagePage() {
                                 <XIcon size={16} />
                             </button>
                         </div>
-                        
+
                         {/* Progress Bar */}
                         <div className="mb-3">
                             <div className="flex items-center justify-between text-xs mb-1">
@@ -2301,15 +2312,15 @@ export default function BulkMessagePage() {
                                 </span>
                             </div>
                             <div className="w-full bg-green-900/30 rounded-full h-2 overflow-hidden">
-                                <div 
+                                <div
                                     className="h-full bg-green-500 transition-all duration-300 rounded-full"
-                                    style={{ 
-                                        width: `${sendJobProgress.total > 0 ? ((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100 : 0}%` 
+                                    style={{
+                                        width: `${sendJobProgress.total > 0 ? ((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100 : 0}%`
                                     }}
                                 />
                             </div>
                         </div>
-                        
+
                         {/* Stats */}
                         <div className="grid grid-cols-3 gap-4 text-xs">
                             <div>
@@ -2325,7 +2336,7 @@ export default function BulkMessagePage() {
                                 <div className="text-red-300 font-semibold">{sendJobProgress.failed}</div>
                             </div>
                         </div>
-                        
+
                         {/* Errors */}
                         {sendJobProgress.errors && sendJobProgress.errors.length > 0 && (
                             <div className="mt-3 pt-3 border-t border-green-500/20">
@@ -2346,7 +2357,7 @@ export default function BulkMessagePage() {
                                 </div>
                             </div>
                         )}
-                        
+
                         {/* Status message */}
                         {sendJobProgress.status === "running" && (
                             <div className="mt-3 text-xs text-green-300/80 italic">
@@ -2415,11 +2426,10 @@ export default function BulkMessagePage() {
                                                     setShowPageDropdown(false);
                                                     setPageSearchQuery("");
                                                 }}
-                                                className={`w-full text-left px-4 py-2 text-sm transition-colors ${
-                                                    selectedPage === page
-                                                        ? "bg-indigo-500/20 text-indigo-400"
-                                                        : "text-zinc-300 hover:bg-zinc-800/50"
-                                                }`}
+                                                className={`w-full text-left px-4 py-2 text-sm transition-colors ${selectedPage === page
+                                                    ? "bg-indigo-500/20 text-indigo-400"
+                                                    : "text-zinc-300 hover:bg-zinc-800/50"
+                                                    }`}
                                             >
                                                 {page}
                                             </button>
@@ -2457,8 +2467,8 @@ export default function BulkMessagePage() {
                             key={tag}
                             onClick={() => setSelectedTag(tag)}
                             className={`group flex items-center gap-2 rounded-full px-4 py-1.5 text-xs font-medium transition-all duration-300 backdrop-blur-sm ${selectedTag === tag
-                                    ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/25 scale-105"
-                                    : "bg-zinc-900/50 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-white/5"
+                                ? "bg-gradient-to-r from-indigo-500 to-purple-600 text-white shadow-lg shadow-indigo-500/25 scale-105"
+                                : "bg-zinc-900/50 text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200 border border-white/5"
                                 }`}
                         >
                             {tag}
@@ -2496,8 +2506,8 @@ export default function BulkMessagePage() {
                         >
                             <div
                                 className={`flex h-5 w-5 items-center justify-center rounded-md border transition-all duration-300 ${isPageSelected
-                                        ? "border-indigo-500 bg-indigo-500 text-white"
-                                        : "border-zinc-700 bg-transparent group-hover:border-zinc-500"
+                                    ? "border-indigo-500 bg-indigo-500 text-white"
+                                    : "border-zinc-700 bg-transparent group-hover:border-zinc-500"
                                     }`}
                             >
                                 {isPageSelected && <CheckIcon />}
@@ -2567,16 +2577,16 @@ export default function BulkMessagePage() {
                                 onClick={() => toggleSelection(contactId)}
                                 style={{ animationDelay: `${index * 50}ms` }}
                                 className={`group relative flex cursor-pointer items-center gap-4 rounded-2xl border p-3 transition-all duration-300 animate-in fade-in slide-in-from-bottom-2 backdrop-blur-sm ${isSelected
-                                        ? "border-indigo-500/50 bg-indigo-500/10 shadow-[0_0_20px_-5px_rgba(99,102,241,0.2)]"
-                                        : "border-white/5 bg-zinc-900/20 hover:bg-zinc-900/60 hover:border-white/10 hover:translate-x-1"
+                                    ? "border-indigo-500/50 bg-indigo-500/10 shadow-[0_0_20px_-5px_rgba(99,102,241,0.2)]"
+                                    : "border-white/5 bg-zinc-900/20 hover:bg-zinc-900/60 hover:border-white/10 hover:translate-x-1"
                                     }`}
                             >
                                 <div className={`absolute left-0 top-3 bottom-3 w-1 rounded-r-full bg-indigo-500 transition-all duration-300 ${isSelected ? "opacity-100" : "opacity-0"}`} />
 
                                 <div
                                     className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border transition-all duration-300 ml-2 ${isSelected
-                                            ? "border-indigo-500 bg-indigo-500 text-white scale-110"
-                                            : "border-zinc-700 bg-zinc-950/50 group-hover:border-zinc-500"
+                                        ? "border-indigo-500 bg-indigo-500 text-white scale-110"
+                                        : "border-zinc-700 bg-zinc-950/50 group-hover:border-zinc-500"
                                         }`}
                                 >
                                     {isSelected && <CheckIcon />}
@@ -2636,7 +2646,7 @@ export default function BulkMessagePage() {
                             </div>
                             {contacts.length === 0 ? (
                                 <>
-                            <h3 className="text-zinc-300 font-medium">No contacts found</h3>
+                                    <h3 className="text-zinc-300 font-medium">No contacts found</h3>
                                     <p className="text-zinc-500 text-sm mt-1 max-w-md mx-auto">
                                         No conversations found on your connected pages. Contacts will appear here when someone messages your Facebook Pages.
                                     </p>
@@ -2681,8 +2691,8 @@ export default function BulkMessagePage() {
                                         key={pageNum}
                                         onClick={() => setCurrentPage(pageNum)}
                                         className={`h-8 w-8 rounded-lg text-xs font-medium transition-all ${currentPage === pageNum
-                                                ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/25"
-                                                : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
+                                            ? "bg-indigo-500 text-white shadow-lg shadow-indigo-500/25"
+                                            : "text-zinc-400 hover:bg-white/5 hover:text-zinc-200"
                                             }`}
                                     >
                                         {pageNum}
@@ -2799,8 +2809,8 @@ export default function BulkMessagePage() {
                                             <div className="text-xs text-zinc-500">contacts</div>
                                         </div>
                                     </div>
-                                    
-                                    
+
+
                                     {/* Recent Contacts */}
                                     {fetchingProgress.recentContacts.length > 0 && (
                                         <div className="pt-3 border-t border-white/10">
@@ -2871,14 +2881,14 @@ export default function BulkMessagePage() {
                                     if (attachedFile.type.startsWith("audio/")) return <AudioIcon />;
                                     return <FileIcon />;
                                 };
-                                
+
                                 const getFileTypeLabel = () => {
                                     if (attachedFile.type.startsWith("image/")) return "Image";
                                     if (attachedFile.type.startsWith("video/")) return "Video";
                                     if (attachedFile.type.startsWith("audio/")) return "Audio";
                                     return "File";
                                 };
-                                
+
                                 return (
                                     <div className="absolute bottom-4 left-4 right-4 flex items-center gap-2 rounded-lg bg-white/5 p-2 border border-white/10 animate-in fade-in slide-in-from-bottom-2">
                                         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-indigo-500/20 text-indigo-400">
@@ -2936,17 +2946,17 @@ export default function BulkMessagePage() {
                                     />
                                 </div>
                             </div>
-                            <button 
+                            <button
                                 onClick={handleSendBroadcast}
-                                disabled={!message.trim() || selectedContactIds.length === 0}
+                                disabled={!message.trim() || selectedContactIds.length === 0 || activeSends > 0}
                                 className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                                 title={!message.trim() ? "Enter a message to send" : selectedContactIds.length === 0 ? "Select at least one contact" : "Send message (works even while syncing contacts)"}
                             >
                                 <span>
-                                    {activeSends > 0 
-                                        ? `Sending... (${activeSends})` 
-                                        : scheduleDate 
-                                            ? "Schedule" 
+                                    {activeSends > 0
+                                        ? `Sending... (${activeSends})`
+                                        : scheduleDate
+                                            ? "Schedule"
                                             : "Send Broadcast"}
                                 </span>
                                 <SendIcon />
@@ -2968,7 +2978,7 @@ export default function BulkMessagePage() {
                             <div>
                                 <h2 className="text-xl font-bold text-white">Manage Facebook Pages</h2>
                                 <p className="text-sm text-zinc-400 mt-1">Select which pages to connect</p>
-        </div>
+                            </div>
                             <button
                                 onClick={() => setShowReconnectModal(false)}
                                 className="rounded-lg p-2 hover:bg-zinc-800 transition-colors"
@@ -3044,11 +3054,10 @@ export default function BulkMessagePage() {
                                                     <button
                                                         key={page.id}
                                                         onClick={() => toggleConnectedPageSelection(page.id)}
-                                                        className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all ${
-                                                            isSelected
-                                                                ? "border-red-500/50 bg-red-500/10"
-                                                                : "border-green-500/30 bg-green-500/10 hover:border-green-500/50"
-                                                        }`}
+                                                        className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all ${isSelected
+                                                            ? "border-red-500/50 bg-red-500/10"
+                                                            : "border-green-500/30 bg-green-500/10 hover:border-green-500/50"
+                                                            }`}
                                                     >
                                                         <div className="flex items-center gap-3 flex-1 min-w-0">
                                                             <span className="text-sm font-medium text-white truncate">{page.name}</span>
@@ -3136,7 +3145,7 @@ export default function BulkMessagePage() {
                                         </button>
                                     </div>
                                 </div>
-                                
+
                                 {paginatedModalPages.length === 0 ? (
                                     <div className="text-center py-8 text-zinc-400">
                                         <p>No pages found. Try reconnecting your Facebook account.</p>
@@ -3168,13 +3177,13 @@ export default function BulkMessagePage() {
                                                                     if (response.ok) {
                                                                         // Update local state
                                                                         setConnectedPageIds(prev => [...prev, page.id]);
-                                                                        const connectedPages = [...pageData, page].filter((p: any, index: number, self: any[]) => 
+                                                                        const connectedPages = [...pageData, page].filter((p: any, index: number, self: any[]) =>
                                                                             index === self.findIndex((t: any) => t.id === p.id)
                                                                         );
                                                                         setPageData(connectedPages);
                                                                         const pageNames = ["All Pages", ...connectedPages.map((p: any) => p.name)];
                                                                         setPages(pageNames);
-                                                                        
+
                                                                         // Refresh contacts (only if not fetching)
                                                                         if (!isFetchingRef.current && !fetchingProgress.isFetching && !isLoadingContactsRef.current) {
                                                                             try {
@@ -3192,7 +3201,7 @@ export default function BulkMessagePage() {
                                                                     } else {
                                                                         const contentType = response.headers.get("content-type");
                                                                         let errorData: any = { error: "Unknown error" };
-                                                                        
+
                                                                         if (contentType && contentType.includes("application/json")) {
                                                                             try {
                                                                                 const text = await response.text();
@@ -3202,7 +3211,7 @@ export default function BulkMessagePage() {
                                                                                 errorData = { error: `Server error (${response.status})` };
                                                                             }
                                                                         }
-                                                                        
+
                                                                         alert(`Failed to connect page: ${errorData.error || "Unknown error"}`);
                                                                     }
                                                                 } catch (error) {
@@ -3230,13 +3239,13 @@ export default function BulkMessagePage() {
                                                                         setPageData(connectedPages);
                                                                         const pageNames = ["All Pages", ...connectedPages.map((p: any) => p.name)];
                                                                         setPages(pageNames);
-                                                                        
+
                                                                         // Update contacts to remove contacts from disconnected page
                                                                         setContacts(prev => prev.filter(c => c.pageId !== page.id));
                                                                     } else {
                                                                         const contentType = response.headers.get("content-type");
                                                                         let errorData: any = { error: "Unknown error" };
-                                                                        
+
                                                                         if (contentType && contentType.includes("application/json")) {
                                                                             try {
                                                                                 const text = await response.text();
@@ -3246,7 +3255,7 @@ export default function BulkMessagePage() {
                                                                                 errorData = { error: `Server error (${response.status})` };
                                                                             }
                                                                         }
-                                                                        
+
                                                                         alert(`Failed to disconnect page: ${errorData.error || "Unknown error"}`);
                                                                     }
                                                                 } catch (error) {
@@ -3255,13 +3264,12 @@ export default function BulkMessagePage() {
                                                                 }
                                                             }
                                                         }}
-                                                        className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all cursor-pointer ${
-                                                            isConnected
-                                                                ? "border-indigo-500 bg-indigo-500/10 hover:bg-indigo-500/20"
-                                                                : isSelectedForBulk
+                                                        className={`w-full flex items-center justify-between rounded-lg border p-3 text-left transition-all cursor-pointer ${isConnected
+                                                            ? "border-indigo-500 bg-indigo-500/10 hover:bg-indigo-500/20"
+                                                            : isSelectedForBulk
                                                                 ? "border-indigo-500/50 bg-indigo-500/10 hover:bg-indigo-500/20"
                                                                 : "border-white/10 bg-zinc-800/30 hover:border-indigo-500/50 hover:bg-indigo-500/10"
-                                                        }`}
+                                                            }`}
                                                     >
                                                         <div className="flex items-center gap-3 flex-1 min-w-0">
                                                             <span className="text-sm font-medium text-white truncate">{page.name}</span>

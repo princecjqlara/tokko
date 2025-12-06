@@ -274,12 +274,7 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
   }
   
   // Update the passed Set so caller can track sent contacts across pages
-  // (Already done above, but ensure all are synced)
-  if (sentContactIds) {
-    localSentIds.forEach(id => sentContactIds.add(id));
-  }
-  
-  // Update the passed Set so caller can track sent contacts across pages
+  // (Already done above during processing, but ensure all are synced)
   if (sentContactIds) {
     localSentIds.forEach(id => sentContactIds.add(id));
   }
@@ -733,7 +728,7 @@ export async function GET(request: NextRequest) {
       .from("send_jobs")
       .select("*")
       .in("status", ["pending", "running"]) // Also process running jobs to resume them
-      .or(`updated_at.lt.${tenSecondsAgo},updated_at.is.null`) // Only process jobs not updated in last 10 seconds
+      .or(`updated_at.lt.${tenSecondsAgo},updated_at.is.null,status.eq.pending`) // Only process jobs not updated in last 10 seconds (or pending)
       .order("started_at", { ascending: true })
       .limit(MAX_JOBS_PER_RUN);
     

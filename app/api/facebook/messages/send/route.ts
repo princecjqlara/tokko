@@ -27,7 +27,7 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    
+
     if (!session || !(session as any).accessToken) {
       return NextResponse.json(
         { error: "Unauthorized" },
@@ -65,21 +65,25 @@ export async function POST(request: NextRequest) {
     // The frontend uses contact_id as the id, so we need to query by contact_id
     // But we also need page_id to uniquely identify contacts
     // Since contactIds might be contact_id values, we need to handle both cases
-    
+
     let contacts: any[] | null = null;
     let contactsError: any = null;
-    
+
     try {
       // Add timeout to database queries (10 seconds)
       const queryTimeout = 10000;
-      
+
       // Chunk contactIds to avoid Supabase IN() query limits
       // Supabase has a limit on the number of items in IN() clauses (typically 200-1000)
       contacts = [];
       contactsError = null;
-      
-      // First, try to fetch by database id (in case frontend is using database IDs)
-      // Process in chunks to avoid "Bad Request" errors
+
+      // IMPORTANT: Frontend sends a mix of database IDs and contact_ids
+      // We need to try BOTH methods and merge results
+      // First, try to fetch by database id
+      console.log("[Send Message API] Fetching contacts by database id...");
+      const contactsByDbId: any[] = [];
+
       for (const chunk of chunkArray(contactIds, CONTACT_FETCH_CHUNK)) {
         const chunkQueryPromise = supabaseServer
           .from("contacts")
@@ -93,19 +97,18 @@ export async function POST(request: NextRequest) {
           .in("id", chunk)
           .eq("user_id", userId);
 
-        const timeoutPromise = new Promise((_, reject) => 
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
         );
 
         try {
           const chunkQuery = await Promise.race([chunkQueryPromise, timeoutPromise]) as any;
-          
+
           if (chunkQuery.error) {
             console.error(`[Send Message API] Error fetching chunk by id:`, chunkQuery.error);
             contactsError = chunkQuery.error;
-            // Continue to next chunk or try contact_id
           } else if (chunkQuery.data && chunkQuery.data.length > 0) {
-            contacts.push(...chunkQuery.data);
+            contactsByDbId.push(...chunkQuery.data);
           }
         } catch (chunkError: any) {
           console.error(`[Send Message API] Error in chunk query:`, chunkError);
@@ -115,62 +118,66 @@ export async function POST(request: NextRequest) {
         }
       }
 
-      // If no contacts found by database id, try by contact_id
-      if ((!contacts || contacts.length === 0) && contactIds.length > 0) {
-        console.log("[Send Message API] No contacts found by database id, trying by contact_id");
-        contacts = []; // Reset for contact_id query
-        
-        // Process in chunks
-        for (const chunk of chunkArray(contactIds, CONTACT_FETCH_CHUNK)) {
-          const chunkQueryPromise = supabaseServer
-            .from("contacts")
-            .select(`
-              id,
-              contact_id,
-              page_id,
-              contact_name,
-              page_name
-            `)
-            .in("contact_id", chunk)
-            .eq("user_id", userId);
-          
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
-          );
-          
-          try {
-            const chunkQuery = await Promise.race([chunkQueryPromise, timeoutPromise]) as any;
-            
-            if (chunkQuery.error) {
-              console.error(`[Send Message API] Error fetching chunk by contact_id:`, chunkQuery.error);
-              contactsError = chunkQuery.error;
-            } else if (chunkQuery.data && chunkQuery.data.length > 0) {
-              contacts.push(...chunkQuery.data);
-            }
-          } catch (chunkError: any) {
-            console.error(`[Send Message API] Error in chunk query (contact_id):`, chunkError);
-            if (!contactsError) {
-              contactsError = chunkError;
-            }
+      console.log(`[Send Message API] Found ${contactsByDbId.length} contacts by database id`);
+
+      // ALWAYS try by contact_id as well (don't skip even if we found some by id)
+      console.log("[Send Message API] Fetching contacts by contact_id...");
+      const contactsByContactId: any[] = [];
+
+      for (const chunk of chunkArray(contactIds, CONTACT_FETCH_CHUNK)) {
+        const chunkQueryPromise = supabaseServer
+          .from("contacts")
+          .select(`
+            id,
+            contact_id,
+            page_id,
+            contact_name,
+            page_name
+          `)
+          .in("contact_id", chunk)
+          .eq("user_id", userId);
+
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
+        );
+
+        try {
+          const chunkQuery = await Promise.race([chunkQueryPromise, timeoutPromise]) as any;
+
+          if (chunkQuery.error) {
+            console.error(`[Send Message API] Error fetching chunk by contact_id:`, chunkQuery.error);
+            contactsError = chunkQuery.error;
+          } else if (chunkQuery.data && chunkQuery.data.length > 0) {
+            contactsByContactId.push(...chunkQuery.data);
+          }
+        } catch (chunkError: any) {
+          console.error(`[Send Message API] Error in chunk query (contact_id):`, chunkError);
+          if (!contactsError) {
+            contactsError = chunkError;
           }
         }
       }
-      
-      // Remove duplicates (in case same contact appears in multiple chunks)
-      if (contacts && contacts.length > 0) {
-        const uniqueContacts = new Map();
-        for (const contact of contacts) {
-          const key = `${contact.id}_${contact.contact_id}`;
-          if (!uniqueContacts.has(key)) {
-            uniqueContacts.set(key, contact);
-          }
+
+      console.log(`[Send Message API] Found ${contactsByContactId.length} contacts by contact_id`);
+
+      // Merge both results and remove duplicates
+      const allContacts = [...contactsByDbId, ...contactsByContactId];
+      const uniqueContacts = new Map();
+
+      for (const contact of allContacts) {
+        // Use a composite key to ensure uniqueness
+        const key = `${contact.page_id}_${contact.contact_id}`;
+        if (!uniqueContacts.has(key)) {
+          uniqueContacts.set(key, contact);
         }
-        contacts = Array.from(uniqueContacts.values());
       }
+
+      contacts = Array.from(uniqueContacts.values());
+      console.log(`[Send Message API] Total unique contacts after merge: ${contacts.length}`);
     } catch (dbError: any) {
       console.error("[Send Message API] Database error fetching contacts:", dbError);
       contactsError = dbError;
-      
+
       // If it's a timeout, provide a more helpful error message
       if (dbError.message?.includes("timeout")) {
         contactsError = {
@@ -192,7 +199,7 @@ export async function POST(request: NextRequest) {
       const errorMessage = typeof contactsError === 'string' && contactsError.includes('<html>')
         ? "Database connection timeout. Please try again."
         : contactsError.message || "Failed to fetch contacts";
-      
+
       return NextResponse.json(
         { error: "Failed to fetch contacts", details: errorMessage },
         { status: 500 }
@@ -210,7 +217,7 @@ export async function POST(request: NextRequest) {
     // If not scheduled and batch is large, create a background job
     if (!scheduleDate && contacts.length > BACKGROUND_JOB_THRESHOLD) {
       console.log(`[Send Message API] Large batch detected (${contacts.length} contacts), creating background job`);
-      
+
       try {
         const { data: sendJob, error: jobError } = await supabaseServer
           .from("send_jobs")
@@ -247,7 +254,7 @@ export async function POST(request: NextRequest) {
           console.log("[Send Message API] Failed to create job, attempting direct send (may timeout)");
         } else if (sendJob) {
           console.log(`[Send Message API] Background job created successfully: ${sendJob.id}`);
-          
+
           // Trigger background processing asynchronously (don't wait for it)
           // Pass the access token so the job processor can fetch pages if needed
           // Note: We don't use Authorization header since process-send-job accepts accessToken in body
@@ -263,9 +270,9 @@ export async function POST(request: NextRequest) {
             headers: {
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({ 
+            body: JSON.stringify({
               jobId: sendJob.id,
-              accessToken: (session as any).accessToken 
+              accessToken: (session as any).accessToken
             }),
           }).then(response => {
             if (!response.ok) {
@@ -305,7 +312,7 @@ export async function POST(request: NextRequest) {
     if (scheduleDate) {
       const scheduledDate = new Date(scheduleDate);
       const now = new Date();
-      
+
       console.log("[Send Message API] Scheduling message:", {
         scheduleDateInput: scheduleDate,
         scheduledDateISO: scheduledDate.toISOString(),
@@ -315,7 +322,7 @@ export async function POST(request: NextRequest) {
         isFuture: scheduledDate > now,
         timeUntil: scheduledDate.getTime() - now.getTime()
       });
-      
+
       if (scheduledDate <= now) {
         return NextResponse.json(
           { error: "Scheduled date must be in the future" },
@@ -361,7 +368,7 @@ export async function POST(request: NextRequest) {
 
     // Group contacts by page to send messages efficiently
     const contactsByPage = new Map<string, any[]>();
-    
+
     for (const contact of contacts) {
       const pageId = contact.page_id;
       if (!contactsByPage.has(pageId)) {
@@ -386,7 +393,7 @@ export async function POST(request: NextRequest) {
       // Check if we're approaching timeout
       const elapsed = Date.now() - startTime;
       if (elapsed > VERCEL_TIMEOUT) {
-        console.warn(`[Send Message API] Approaching timeout (${Math.round(elapsed/1000)}s elapsed), returning partial results`);
+        console.warn(`[Send Message API] Approaching timeout (${Math.round(elapsed / 1000)}s elapsed), returning partial results`);
         return NextResponse.json({
           success: true,
           results: {
@@ -402,11 +409,11 @@ export async function POST(request: NextRequest) {
       }
       // Get page access token from facebook_pages table
       const firstContact = pageContacts[0];
-      
+
       // Fetch page access token separately
       let pageData: any = null;
       let pageError: any = null;
-      
+
       try {
         // Add timeout to database query (5 seconds)
         const pageQueryPromise = supabaseServer
@@ -414,43 +421,43 @@ export async function POST(request: NextRequest) {
           .select("page_id, page_access_token")
           .eq("page_id", pageId)
           .maybeSingle();
-        
-        const timeoutPromise = new Promise((_, reject) => 
+
+        const timeoutPromise = new Promise((_, reject) =>
           setTimeout(() => reject(new Error("Database query timeout")), 5000)
         );
-        
+
         const pageQuery = await Promise.race([pageQueryPromise, timeoutPromise]) as any;
-      
+
         pageData = pageQuery.data;
         pageError = pageQuery.error;
       } catch (dbError: any) {
         console.error(`[Send Message API] Database error fetching page ${pageId}:`, dbError);
         pageError = dbError;
-        
+
         // If it's a timeout, allow fallback to Facebook API
         if (dbError.message?.includes("timeout")) {
           console.log(`[Send Message API] Database timeout for page ${pageId}, will fetch from Facebook API`);
           pageError = null; // Clear error to allow fallback
         }
       }
-      
+
       // If page not found, try to fetch it from Facebook API
       if (pageError || !pageData) {
         console.log(`Page ${pageId} not in database, fetching from Facebook API...`);
-        
+
         try {
           // Fetch pages from Facebook API
           const pagesResponse = await fetch(
             `https://graph.facebook.com/v18.0/me/accounts?access_token=${(session as any).accessToken}&fields=id,name,access_token&limit=1000`
           );
-          
+
           if (pagesResponse.ok) {
             const pagesData = await pagesResponse.json();
             const pages = pagesData.data || [];
-            
+
             // Find the page we need
             const foundPage = pages.find((p: any) => p.id === pageId);
-            
+
             if (foundPage) {
               // Store the page in database
               const { error: storeError } = await supabaseServer
@@ -463,7 +470,7 @@ export async function POST(request: NextRequest) {
                 }, {
                   onConflict: "page_id",
                 });
-              
+
               if (!storeError) {
                 // Retry fetching from database
                 try {
@@ -472,7 +479,7 @@ export async function POST(request: NextRequest) {
                     .select("page_id, page_access_token")
                     .eq("page_id", pageId)
                     .maybeSingle();
-                  
+
                   pageData = retryResult.data;
                   pageError = retryResult.error;
                   console.log(`✅ Successfully fetched and stored page ${pageId}`);
@@ -487,7 +494,7 @@ export async function POST(request: NextRequest) {
           console.error(`Error fetching page from Facebook API:`, fetchError);
         }
       }
-      
+
       if (pageError || !pageData) {
         console.error(`No access token for page ${pageId}:`, pageError);
         results.failed += pageContacts.length;
@@ -497,9 +504,9 @@ export async function POST(request: NextRequest) {
         });
         continue;
       }
-      
+
       const pageAccessToken = pageData.page_access_token;
-      
+
       if (!pageAccessToken) {
         console.error(`No access token for page ${pageId}`);
         results.failed += pageContacts.length;
@@ -524,7 +531,7 @@ export async function POST(request: NextRequest) {
             try {
               // Determine attachment type (image, video, audio, or file)
               const attachmentType = attachment.type || "file";
-              
+
               // Send media attachment first
               const mediaPayload: any = {
                 recipient: {
@@ -557,9 +564,9 @@ export async function POST(request: NextRequest) {
               const mediaData = await mediaResponse.json();
 
               if (mediaResponse.ok && !mediaData.error) {
-                const typeLabel = attachmentType === "image" ? "image" : 
-                                 attachmentType === "video" ? "video" : 
-                                 attachmentType === "audio" ? "audio" : "file";
+                const typeLabel = attachmentType === "image" ? "image" :
+                  attachmentType === "video" ? "video" :
+                    attachmentType === "audio" ? "audio" : "file";
                 console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
                 // Wait a bit before sending text message
                 await new Promise(resolve => setTimeout(resolve, 500));
@@ -643,12 +650,12 @@ export async function POST(request: NextRequest) {
     // Always return JSON, even on errors, to prevent frontend JSON parsing issues
     try {
       return NextResponse.json(
-        { 
+        {
           success: false,
-          error: "Internal server error", 
-          details: error.message || "An unexpected error occurred" 
+          error: "Internal server error",
+          details: error.message || "An unexpected error occurred"
         },
-        { 
+        {
           status: 500,
           headers: {
             "Content-Type": "application/json"
@@ -658,12 +665,12 @@ export async function POST(request: NextRequest) {
     } catch (jsonError) {
       // Fallback if JSON.stringify fails (shouldn't happen)
       return new NextResponse(
-        JSON.stringify({ 
+        JSON.stringify({
           success: false,
-          error: "Internal server error", 
-          details: "An unexpected error occurred" 
+          error: "Internal server error",
+          details: "An unexpected error occurred"
         }),
-        { 
+        {
           status: 500,
           headers: {
             "Content-Type": "application/json"
