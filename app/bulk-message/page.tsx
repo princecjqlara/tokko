@@ -2324,41 +2324,43 @@ export default function BulkMessagePage() {
                 )}
 
                 {sendJobProgress && (
-                    <div className="mb-6 rounded-xl border border-green-500/40 bg-green-500/10 px-4 py-4 text-sm text-green-100">
-                        <div className="flex items-center justify-between mb-3">
-                            <div className="font-semibold text-green-200">
-                                {sendJobProgress.status === "completed" ? "✅ Messages sent successfully!" :
-                                    sendJobProgress.status === "failed" ? "❌ Sending failed" :
-                                        sendJobProgress.status === "running" ? "📤 Sending messages..." :
-                                            "⏳ Queued for sending"}
+                    <div className="mb-6 rounded-xl border border-zinc-700/50 bg-zinc-900/40 backdrop-blur-sm px-5 py-4">
+                        {/* Header with status and close button */}
+                        <div className="flex items-center justify-between mb-4">
+                            <div className="flex items-center gap-3">
+                                <div className="text-sm font-semibold text-white">
+                                    {sendJobProgress.status === "completed" ? "✅ Sending messages..." :
+                                        sendJobProgress.status === "failed" ? "❌ Sending failed" :
+                                            sendJobProgress.status === "running" ? "📤 Sending messages..." :
+                                                "⏳ Queued for sending"}
+                                </div>
                             </div>
                             <button
                                 onClick={() => {
                                     setSendJobProgress(null);
-                                    // Also clear from localStorage
                                     if (session?.user?.id) {
                                         localStorage.removeItem(`sendJobProgress_${session.user.id}`);
                                     }
                                 }}
-                                className="text-green-300 hover:text-green-100 transition"
+                                className="text-zinc-400 hover:text-white transition"
                             >
-                                <XIcon size={16} />
+                                <XIcon size={18} />
                             </button>
                         </div>
 
-                        {/* Progress Bar */}
-                        <div className="mb-3">
-                            <div className="flex items-center justify-between text-xs mb-1">
-                                <span className="text-green-200">
+                        {/* Progress info and bar */}
+                        <div className="mb-4">
+                            <div className="flex items-center justify-between text-sm mb-2">
+                                <span className="text-zinc-300">
                                     {sendJobProgress.sent + sendJobProgress.failed} of {sendJobProgress.total} processed
                                 </span>
-                                <span className="text-green-300">
+                                <span className="text-zinc-400">
                                     {sendJobProgress.total > 0 ? Math.round(((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100) : 0}%
                                 </span>
                             </div>
-                            <div className="w-full bg-green-900/30 rounded-full h-2 overflow-hidden">
+                            <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
                                 <div
-                                    className="h-full bg-green-500 transition-all duration-300 rounded-full"
+                                    className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300 rounded-full"
                                     style={{
                                         width: `${sendJobProgress.total > 0 ? ((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100 : 0}%`
                                     }}
@@ -2367,50 +2369,65 @@ export default function BulkMessagePage() {
                         </div>
 
                         {/* Stats */}
-                        <div className="grid grid-cols-3 gap-4 text-xs">
-                            <div>
-                                <div className="text-green-300/60">Total</div>
-                                <div className="text-green-200 font-semibold">{sendJobProgress.total}</div>
+                        <div className="grid grid-cols-3 gap-3 mb-4">
+                            <div className="bg-zinc-800/50 rounded-lg px-3 py-2">
+                                <div className="text-xs text-zinc-500">Total</div>
+                                <div className="text-lg font-bold text-white">{sendJobProgress.total}</div>
                             </div>
-                            <div>
-                                <div className="text-green-300/60">Sent</div>
-                                <div className="text-green-200 font-semibold">{sendJobProgress.sent}</div>
+                            <div className="bg-zinc-800/50 rounded-lg px-3 py-2">
+                                <div className="text-xs text-zinc-500">Sent</div>
+                                <div className="text-lg font-bold text-green-400">{sendJobProgress.sent}</div>
                             </div>
-                            <div>
-                                <div className="text-green-300/60">Failed</div>
-                                <div className="text-red-300 font-semibold">{sendJobProgress.failed}</div>
+                            <div className="bg-zinc-800/50 rounded-lg px-3 py-2">
+                                <div className="text-xs text-zinc-500">Failed</div>
+                                <div className="text-lg font-bold text-red-400">{sendJobProgress.failed}</div>
                             </div>
                         </div>
 
-                        {/* Errors */}
-                        {sendJobProgress.errors && sendJobProgress.errors.length > 0 && (
-                            <div className="mt-3 pt-3 border-t border-green-500/20">
-                                <div className="text-xs text-green-300/80 mb-2">
-                                    {sendJobProgress.errors.length} error(s):
+                        {/* Status message and cancel button */}
+                        {sendJobProgress.status === "running" && (
+                            <div className="flex items-center justify-between pt-3 border-t border-zinc-700/50">
+                                <div className="text-xs text-zinc-400 italic">
+                                    Processing messages in the background. This page will update automatically.
                                 </div>
-                                <div className="max-h-32 overflow-y-auto space-y-1">
-                                    {sendJobProgress.errors.slice(0, 5).map((error: any, idx: number) => (
-                                        <div key={idx} className="text-xs text-red-300 bg-red-900/20 px-2 py-1 rounded">
-                                            {error.contact || error.page}: {error.error || JSON.stringify(error)}
-                                        </div>
-                                    ))}
-                                    {sendJobProgress.errors.length > 5 && (
-                                        <div className="text-xs text-green-300/60">
-                                            ... and {sendJobProgress.errors.length - 5} more error(s)
-                                        </div>
-                                    )}
-                                </div>
+                                <button
+                                    onClick={async () => {
+                                        if (confirm('Are you sure you want to cancel this send job?')) {
+                                            try {
+                                                // TODO: Implement cancel job API endpoint
+                                                const response = await fetch(`/api/facebook/messages/cancel-job`, {
+                                                    method: 'POST',
+                                                    headers: { 'Content-Type': 'application/json' },
+                                                    body: JSON.stringify({ jobId: sendJobProgress.jobId })
+                                                });
+
+                                                if (response.ok) {
+                                                    setSendJobProgress(null);
+                                                    if (session?.user?.id) {
+                                                        localStorage.removeItem(`sendJobProgress_${session.user.id}`);
+                                                    }
+                                                    alert('Send job canceled successfully');
+                                                } else {
+                                                    alert('Failed to cancel send job');
+                                                }
+                                            } catch (error) {
+                                                console.error('Error canceling job:', error);
+                                                alert('Error canceling send job');
+                                            }
+                                        }
+                                    }}
+                                    className="flex items-center gap-2 rounded-lg bg-red-600 hover:bg-red-700 px-4 py-2 text-xs font-semibold text-white transition"
+                                >
+                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                    </svg>
+                                    Cancel
+                                </button>
                             </div>
                         )}
 
-                        {/* Status message */}
-                        {sendJobProgress.status === "running" && (
-                            <div className="mt-3 text-xs text-green-300/80 italic">
-                                Processing messages in the background. This page will update automatically.
-                            </div>
-                        )}
                         {sendJobProgress.status === "completed" && sendJobProgress.completedAt && (
-                            <div className="mt-3 text-xs text-green-300/80">
+                            <div className="pt-3 border-t border-zinc-700/50 text-xs text-zinc-400">
                                 Completed at {new Date(sendJobProgress.completedAt).toLocaleString()}
                             </div>
                         )}
