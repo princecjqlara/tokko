@@ -222,13 +222,15 @@ export async function GET(request: NextRequest) {
             }
           };
 
-          // Helper function to check if job was cancelled by user
+          // Helper function to check if job was cancelled by user DURING this stream
+          // Only returns true if cancellation happened after this stream started
           const checkIfCancelled = async (): Promise<boolean> => {
             try {
               const { data, error } = await supabaseServer
                 .from("fetch_jobs")
-                .select("status")
+                .select("status, updated_at")
                 .eq("user_id", userId)
+                .eq("status", "cancelled")
                 .order("updated_at", { ascending: false })
                 .limit(1)
                 .maybeSingle();
@@ -238,7 +240,17 @@ export async function GET(request: NextRequest) {
                 return false;
               }
 
-              return data?.status === "cancelled";
+              // Only consider it cancelled if it was cancelled AFTER this stream started
+              if (data?.status === "cancelled" && data?.updated_at) {
+                const cancelledAt = new Date(data.updated_at).getTime();
+                // If cancelled after this stream started, it's a real cancellation
+                if (cancelledAt > streamStartTime) {
+                  console.log(`[Stream Route] Detected cancellation at ${data.updated_at} (stream started at ${new Date(streamStartTime).toISOString()})`);
+                  return true;
+                }
+              }
+
+              return false;
             } catch (err) {
               console.error("Exception checking cancelled state:", err);
               return false;
