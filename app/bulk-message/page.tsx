@@ -792,7 +792,7 @@ export default function BulkMessagePage() {
                                     setFetchingProgress(prev => ({
                                         ...prev,
                                         isFetching: false,
-                                        message: data.message || `Sync completed! ${data.newContactsCount || 0} new contacts found. Auto-fetching enabled for new messages.`,
+                                        message: data.message || `Sync completed! ${data.newContactsCount || 0} new contacts found. Loading contacts...`,
                                         // Use the accurate total from sync completion
                                         totalContacts: finalTotal
                                     }));
@@ -802,27 +802,26 @@ export default function BulkMessagePage() {
                                     abortControllerRef.current = null;
                                     // Keep hasFetchedRef as true since we completed successfully
                                     markFetched();
-                                    console.log(`✅ [Frontend] Sync completed. Auto-fetching enabled - will check for new messages every 3 seconds.`);
-                                    // Trigger immediate check for new contacts after sync completes
-                                    setTimeout(() => {
-                                        if (!isFetchingRef.current && !fetchingProgress.isFetching) {
-                                            console.log("[Frontend] Auto-checking for new contacts after sync...");
-                                            fetch("/api/facebook/contacts/background").then(response => {
-                                                if (response.ok) {
-                                                    return response.json().then((jobData: any) => {
-                                                        const job = jobData.job;
-                                                        if (job && job.status === "pending" && !isFetchingRef.current) {
-                                                            console.log("[Frontend] 🚀 New contacts detected, starting auto-fetch...");
-                                                            hasFetchedRef.current = false;
-                                                            fetchContactsRealtime();
-                                                        }
-                                                    });
-                                                }
-                                            }).catch(err => {
-                                                console.error("[Frontend] Error checking for new contacts:", err);
-                                            });
+                                    console.log(`✅ [Frontend] Sync completed. Reloading all contacts from database...`);
+
+                                    // IMPORTANT: Reload all contacts from database to ensure frontend is updated
+                                    try {
+                                        const reloadResponse = await fetch("/api/facebook/contacts?fromDatabase=true");
+                                        if (reloadResponse.ok) {
+                                            const reloadData = await reloadResponse.json();
+                                            if (reloadData.contacts) {
+                                                console.log(`[Frontend] Reloaded ${reloadData.contacts.length} contacts from database`);
+                                                setContacts(reloadData.contacts);
+                                                setFetchingProgress(prev => ({
+                                                    ...prev,
+                                                    totalContacts: reloadData.contacts.length,
+                                                    message: `✓ Loaded ${reloadData.contacts.length} contacts from database`
+                                                }));
+                                            }
                                         }
-                                    }, 1000); // Wait 1 second after sync completes before first check
+                                    } catch (reloadError) {
+                                        console.error("[Frontend] Error reloading contacts:", reloadError);
+                                    }
                                     break;
 
                                 case "error":
