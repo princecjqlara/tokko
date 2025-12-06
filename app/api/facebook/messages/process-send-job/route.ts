@@ -87,13 +87,51 @@ async function sendMessageToContact(pageAccessToken: string, contact: ContactRec
   const firstName = contact.contact_name?.split(" ")[0] || "there";
   const personalizedMessage = message.replace(/{FirstName}/g, firstName);
 
-  // IMPORTANT: Send ONLY ONE message per contact
-  // If attachment exists, send ONLY media (no separate text)
-  // If no attachment, send ONLY text
+  let textSent = false;
+  let attachmentSent = false;
+  let lastError: string | null = null;
+
+  // STEP 1: Always send TEXT message first
+  try {
+    console.log(`[Background Job] Sending TEXT to ${contact.contact_name}...`);
+    const textPayload: any = {
+      recipient: { id: contact.contact_id },
+      message: { text: personalizedMessage },
+      messaging_type: "MESSAGE_TAG",
+      tag: "ACCOUNT_UPDATE"
+    };
+
+    const textResponse = await fetch(
+      `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(textPayload),
+      }
+    );
+
+    const textData = await textResponse.json();
+    if (textResponse.ok && !textData.error) {
+      textSent = true;
+      console.log(`✅ [Background Job] Sent TEXT to ${contact.contact_name}`);
+    } else {
+      lastError = textData.error?.message || "Failed to send text";
+      console.error(`❌ [Background Job] Failed TEXT to ${contact.contact_name}: ${lastError}`);
+    }
+  } catch (error: any) {
+    lastError = error?.message || "Failed to send text";
+    console.error(`❌ [Background Job] Error sending TEXT to ${contact.contact_name}:`, error);
+  }
+
+  // STEP 2: Send MEDIA if attachment exists (after text)
   if (attachment && attachment.url) {
-    // Send ONLY media attachment (no separate text message)
+    // Wait a moment to ensure proper ordering
+    await sleep(300);
+
     try {
       const attachmentType = attachment.type || "file";
+      console.log(`[Background Job] Sending ${attachmentType} to ${contact.contact_name}...`);
+
       const mediaPayload: any = {
         recipient: { id: contact.contact_id },
         message: {
@@ -119,51 +157,27 @@ async function sendMessageToContact(pageAccessToken: string, contact: ContactRec
       );
 
       const mediaData = await mediaResponse.json();
-      if (!mediaResponse.ok || mediaData.error) {
-        return {
-          success: false,
-          attachmentSent: false,
-          error: mediaData.error?.message || `Failed to send ${attachmentType}`
-        };
+      if (mediaResponse.ok && !mediaData.error) {
+        attachmentSent = true;
+        console.log(`✅ [Background Job] Sent MEDIA to ${contact.contact_name}`);
+      } else {
+        const mediaError = mediaData.error?.message || `Failed to send ${attachmentType}`;
+        console.error(`❌ [Background Job] Failed MEDIA to ${contact.contact_name}: ${mediaError}`);
+        // Don't overwrite lastError if text failed - text failure is more important
+        if (!lastError) lastError = mediaError;
       }
-
-      return { success: true, attachmentSent: true };
     } catch (error: any) {
-      return {
-        success: false,
-        attachmentSent: false,
-        error: error?.message || "Failed to send attachment"
-      };
+      console.error(`❌ [Background Job] Error sending MEDIA to ${contact.contact_name}:`, error);
+      if (!lastError) lastError = error?.message || "Failed to send media";
     }
-  } else {
-    // No attachment - send ONLY text message
-    const textPayload: any = {
-      recipient: { id: contact.contact_id },
-      message: { text: personalizedMessage },
-      messaging_type: "MESSAGE_TAG",
-      tag: "ACCOUNT_UPDATE"
-    };
-
-    const sendResponse = await fetch(
-      `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(textPayload),
-      }
-    );
-
-    const sendData = await sendResponse.json();
-    if (sendResponse.ok && !sendData.error) {
-      return { success: true, attachmentSent: false };
-    }
-
-    return {
-      success: false,
-      attachmentSent: false,
-      error: sendData.error?.message || "Unknown error"
-    };
   }
+
+  // Success if text was sent (primary message)
+  return {
+    success: textSent,
+    attachmentSent,
+    error: textSent ? null : lastError
+  };
 }
 
 async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], message: string, attachment: any, userAccessToken: string | null, sentContactIds?: Set<string>) {
