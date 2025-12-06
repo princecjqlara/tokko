@@ -250,6 +250,7 @@ export default function BulkMessagePage() {
     const lastContactLoadTimeRef = useRef<number>(0); // Track last contact load time to prevent rapid successive loads
     const contactLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Track debounce timeout
     const isSendingRef = useRef(false); // Track if a send is in progress (prevents race conditions)
+    const sendAbortControllerRef = useRef<AbortController | null>(null); // AbortController for canceling sends
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -1769,6 +1770,21 @@ export default function BulkMessagePage() {
         }
     };
 
+    // Cancel ongoing send
+    const handleCancelSend = () => {
+        if (sendAbortControllerRef.current) {
+            console.log("[Frontend] Canceling send operation...");
+            sendAbortControllerRef.current.abort();
+            sendAbortControllerRef.current = null;
+
+            // Reset sending state
+            isSendingRef.current = false;
+            setActiveSends(0);
+
+            alert("Message sending has been canceled.");
+        }
+    };
+
     // Send broadcast message
     const handleSendBroadcast = async () => {
         if (!message.trim()) {
@@ -1795,6 +1811,9 @@ export default function BulkMessagePage() {
 
         // Mark as sending immediately (synchronous)
         isSendingRef.current = true;
+
+        // Create AbortController for this send operation
+        sendAbortControllerRef.current = new AbortController();
 
         // Increment active sends counter for UI
         setActiveSends(prev => {
@@ -1905,6 +1924,7 @@ export default function BulkMessagePage() {
                 headers: {
                     "Content-Type": "application/json",
                 },
+                signal: sendAbortControllerRef.current?.signal,
                 body: JSON.stringify({
                     contactIds: selectedContactIds,
                     message: message.trim(),
@@ -2015,11 +2035,18 @@ export default function BulkMessagePage() {
                 alert(`Failed to send messages: ${errorMsg}`);
             }
         } catch (error: any) {
-            console.error("Error sending broadcast:", error);
-            alert(`Error: ${error.message || "Failed to send messages"}`);
+            // Check if error is due to abort
+            if (error.name === 'AbortError') {
+                console.log("[Frontend] Send operation was canceled by user");
+                // Don't show alert, user initiated the cancel
+            } else {
+                console.error("Error sending broadcast:", error);
+                alert(`Error: ${error.message || "Failed to send messages"}`);
+            }
         } finally {
-            // Reset ref immediately (synchronous)
+            // Reset ref and abort controller immediately (synchronous)
             isSendingRef.current = false;
+            sendAbortControllerRef.current = null;
 
             setActiveSends(prev => {
                 const newCount = prev - 1;
@@ -2964,21 +2991,38 @@ export default function BulkMessagePage() {
                                     />
                                 </div>
                             </div>
-                            <button
-                                onClick={handleSendBroadcast}
-                                disabled={!message.trim() || selectedContactIds.length === 0 || activeSends > 0}
-                                className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
-                                title={!message.trim() ? "Enter a message to send" : selectedContactIds.length === 0 ? "Select at least one contact" : "Send message (works even while syncing contacts)"}
-                            >
-                                <span>
-                                    {activeSends > 0
-                                        ? `Sending... (${activeSends})`
-                                        : scheduleDate
-                                            ? "Schedule"
-                                            : "Send Broadcast"}
-                                </span>
-                                <SendIcon />
-                            </button>
+                            <div className="flex items-center gap-2">
+                                {/* Cancel Button - only show when sending */}
+                                {activeSends > 0 && (
+                                    <button
+                                        onClick={handleCancelSend}
+                                        className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-red-600 to-red-700 px-4 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-red-500/25 hover:scale-105 active:scale-95"
+                                        title="Cancel sending messages"
+                                    >
+                                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                        </svg>
+                                        <span>Cancel</span>
+                                    </button>
+                                )}
+
+                                {/* Send Button */}
+                                <button
+                                    onClick={handleSendBroadcast}
+                                    disabled={!message.trim() || selectedContactIds.length === 0 || activeSends > 0}
+                                    className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                                    title={!message.trim() ? "Enter a message to send" : selectedContactIds.length === 0 ? "Select at least one contact" : "Send message (works even while syncing contacts)"}
+                                >
+                                    <span>
+                                        {activeSends > 0
+                                            ? `Sending... (${activeSends})`
+                                            : scheduleDate
+                                                ? "Schedule"
+                                                : "Send Broadcast"}
+                                    </span>
+                                    <SendIcon />
+                                </button>
+                            </div>
                         </div>
                     </div>
                 </div>
