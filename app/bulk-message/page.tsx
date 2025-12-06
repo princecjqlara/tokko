@@ -352,8 +352,9 @@ export default function BulkMessagePage() {
         await signOut({ callbackUrl: "/" });
     };
 
-    // Handle stop fetching
-    const handleStopFetching = () => {
+    // Handle stop/cancel fetching - stops both frontend and backend
+    const handleStopFetching = async () => {
+        // Abort frontend stream
         if (abortControllerRef.current) {
             abortControllerRef.current.abort();
             abortControllerRef.current = null;
@@ -364,9 +365,38 @@ export default function BulkMessagePage() {
             ...prev,
             isFetching: false,
             isPaused: false,
-            message: "Fetching stopped by user"
+            message: "Cancelling fetch..."
         }));
         setIsLoading(false);
+
+        // Also cancel the server-side job
+        try {
+            const response = await fetch("/api/facebook/contacts/cancel", {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+            });
+
+            if (response.ok) {
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    message: "Fetching cancelled by user"
+                }));
+            } else {
+                console.error("Failed to cancel server job:", await response.text());
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    message: "Fetching stopped (server cleanup may be pending)"
+                }));
+            }
+        } catch (error) {
+            console.error("Error cancelling server job:", error);
+            setFetchingProgress(prev => ({
+                ...prev,
+                message: "Fetching stopped by user"
+            }));
+        }
     };
 
     // Handle pause/resume fetching
@@ -2985,6 +3015,15 @@ export default function BulkMessagePage() {
                                                                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                                                                     </svg>
                                                                 )}
+                                                            </button>
+                                                            <button
+                                                                onClick={handleStopFetching}
+                                                                className="p-1.5 hover:bg-red-500/20 rounded transition-colors text-red-400 hover:text-red-300"
+                                                                title="Cancel Fetching"
+                                                            >
+                                                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                                                                </svg>
                                                             </button>
                                                         </>
                                                     )}
