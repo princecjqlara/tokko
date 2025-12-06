@@ -739,8 +739,8 @@ export async function POST(request: NextRequest) {
       userId = sendJob.user_id;
     }
 
-    // Only process pending jobs
-    if (sendJob.status !== "pending" && sendJob.status !== "running") {
+    // Only process pending/processing/running jobs
+    if (!["pending", "processing", "running"].includes(sendJob.status)) {
       return NextResponse.json({
         message: "Job already processed",
         status: sendJob.status
