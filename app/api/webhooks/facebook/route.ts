@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import crypto from "crypto";
+import * as crypto from "crypto";
 import { supabaseServer } from "@/lib/supabase-server";
 
 // Import the server-side fetch function logic
