@@ -336,8 +336,8 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     const sentContactIdsSet = new Set<string>();
     if (sendJob.errors && Array.isArray(sendJob.errors)) {
       for (const error of sendJob.errors) {
-        if (error.sent_contact_ids && Array.isArray(error.sent_contact_ids)) {
-          error.sent_contact_ids.forEach((id: string) => sentContactIdsSet.add(id));
+        if (error._metadata && error._metadata.sent_contact_ids && Array.isArray(error._metadata.sent_contact_ids)) {
+          error._metadata.sent_contact_ids.forEach((id: string) => sentContactIdsSet.add(id));
         }
       }
     }
@@ -351,18 +351,9 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       console.log(`[Process Send Job] Job ${sendJob.id}: Starting fresh - processing ${contactsToProcess.length} contacts`);
     }
     
-    // Re-group remaining contacts by page
-    contactsByPage.clear();
-    for (const contact of contactsToProcess) {
-      if (!contactsByPage.has(contact.page_id)) {
-        contactsByPage.set(contact.page_id, []);
-      }
-      contactsByPage.get(contact.page_id)!.push(contact);
-    }
-
-    // Group by page
+    // Group remaining contacts by page
     const contactsByPage = new Map<string, ContactRecord[]>();
-    for (const contact of deduplicatedContacts) {
+    for (const contact of contactsToProcess) {
       if (!contactsByPage.has(contact.page_id)) {
         contactsByPage.set(contact.page_id, []);
       }
@@ -395,7 +386,10 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
           .update({
             sent_count: messageSuccess,
             failed_count: messageFailed,
-            errors: [...messageErrors, { error: `Timeout: Processed ${messageSuccess + messageFailed} of ${deduplicatedContacts.length} contacts. Job will resume on next cron run.` }],
+            errors: [...messageErrors, { 
+              error: `Timeout: Processed ${messageSuccess + messageFailed} of ${contactsToProcess.length + alreadyProcessed} contacts. Job will resume on next cron run.`,
+              _metadata: { sent_contact_ids: Array.from(sentContactIds) }
+            }],
             updated_at: new Date().toISOString(),
             status: "running" // Keep as running so cron can resume it
           })
@@ -449,7 +443,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     // Final status update
     // Check if we processed all contacts
     const totalProcessed = messageSuccess + messageFailed;
-    const totalExpected = contactsToProcess.length + alreadyProcessed; // Total includes already processed
+    const totalExpected = deduplicatedContacts.length; // Total expected from original contact list
     
     let finalStatus = "completed";
     if (totalProcessed < totalExpected) {
