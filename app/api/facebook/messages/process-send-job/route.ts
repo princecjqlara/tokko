@@ -298,10 +298,19 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   }
 
   // Move to running state (allow resuming from "running" or "failed" status)
-  await supabaseServer
+  // Use atomic update to prevent concurrent processing
+  const { data: updateResult, error: updateError } = await supabaseServer
     .from("send_jobs")
     .update({ status: "running", updated_at: new Date().toISOString() })
-    .eq("id", sendJob.id);
+    .eq("id", sendJob.id)
+    .in("status", ["pending", "running", "failed"]) // Only update if in these states
+    .select()
+    .single();
+  
+  if (updateError || !updateResult) {
+    console.log(`[Process Send Job] Job ${sendJob.id} may have been picked up by another process, skipping`);
+    return;
+  }
 
   try {
     const contactIds = coerceContactIds(sendJob.contact_ids);
