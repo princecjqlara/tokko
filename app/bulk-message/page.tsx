@@ -1772,19 +1772,47 @@ export default function BulkMessagePage() {
         }
     };
 
-    // Cancel ongoing send
-    const handleCancelSend = () => {
+    // Cancel ongoing send (both frontend and background jobs)
+    const handleCancelSend = async () => {
+        console.log("[Frontend] Cancel requested...");
+
+        // Cancel frontend fetch if in progress
         if (sendAbortControllerRef.current) {
-            console.log("[Frontend] Canceling send operation...");
+            console.log("[Frontend] Aborting frontend send operation...");
             sendAbortControllerRef.current.abort();
             sendAbortControllerRef.current = null;
-
-            // Reset sending state
-            isSendingRef.current = false;
-            setActiveSends(0);
-
-            alert("Message sending has been canceled.");
         }
+
+        // Cancel background job if running
+        if (sendJobProgress && sendJobProgress.jobId) {
+            console.log(`[Frontend] Cancelling background job ${sendJobProgress.jobId}...`);
+            try {
+                const response = await fetch("/api/facebook/messages/cancel-job", {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                    },
+                    body: JSON.stringify({ jobId: sendJobProgress.jobId }),
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    console.log("[Frontend] Background job cancelled successfully:", data);
+                    setSendJobProgress(prev => prev ? { ...prev, status: "cancelled" } : null);
+                } else {
+                    const errorData = await response.json();
+                    console.error("[Frontend] Failed to cancel background job:", errorData);
+                }
+            } catch (error) {
+                console.error("[Frontend] Error cancelling background job:", error);
+            }
+        }
+
+        // Reset sending state
+        isSendingRef.current = false;
+        setActiveSends(0);
+
+        alert("Message sending has been canceled.");
     };
 
     // Send broadcast message

@@ -255,6 +255,8 @@ export async function POST(request: NextRequest) {
       console.log(`[Send Message API] Large batch detected (${contacts.length} contacts), creating background job`);
 
       try {
+        // Create job with status 'processing' (not 'pending') so cron doesn't pick it up
+        // We're about to trigger the process-send-job endpoint directly
         const { data: sendJob, error: jobError } = await supabaseServer
           .from("send_jobs")
           .insert({
@@ -262,8 +264,9 @@ export async function POST(request: NextRequest) {
             contact_ids: contactIds,
             message: message.trim(),
             attachment: attachment || null,
-            status: "pending",
-            total_count: contacts.length
+            status: "processing", // NOT 'pending' - prevents cron from picking it up
+            total_count: contacts.length,
+            started_at: new Date().toISOString() // Mark as started
           })
           .select()
           .single();

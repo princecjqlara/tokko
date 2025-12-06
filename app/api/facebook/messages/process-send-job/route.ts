@@ -348,7 +348,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
     })
     .eq("id", sendJob.id)
-    .in("status", ["pending", "running", "failed"])
+    .in("status", ["pending", "processing", "running", "failed"]) // Added 'processing' status
     .select()
     .single();
 
@@ -501,6 +501,18 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     let totalPages = contactsByPage.size;
 
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
+      // Check if job has been cancelled
+      const { data: currentJob } = await supabaseServer
+        .from("send_jobs")
+        .select("status")
+        .eq("id", sendJob.id)
+        .single();
+
+      if (currentJob?.status === "cancelled") {
+        console.log(`[Process Send Job] Job ${sendJob.id} was cancelled by user, stopping processing`);
+        return; // Stop immediately
+      }
+
       // Check timeout before processing each page
       const elapsed = Date.now() - startTime;
       if (elapsed > VERCEL_TIMEOUT) {
