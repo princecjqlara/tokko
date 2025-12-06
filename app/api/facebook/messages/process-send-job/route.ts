@@ -235,15 +235,17 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
       continue;
     }
     
+    // CRITICAL: Mark as "processing" immediately BEFORE sending to prevent race conditions
+    // This ensures that even if the function is called concurrently, we won't send twice
+    localSentIds.add(contact.contact_id);
+    if (sentContactIds) {
+      sentContactIds.add(contact.contact_id);
+    }
+    
     const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment);
 
     if (sendResult.success) {
       success++;
-      localSentIds.add(contact.contact_id); // Mark as sent IMMEDIATELY
-      // Also update the passed Set immediately
-      if (sentContactIds) {
-        sentContactIds.add(contact.contact_id);
-      }
       console.log(`✅ [sendMessagesForPage] Sent message to ${contact.contact_name} (${contact.contact_id}) - total sent in this run: ${localSentIds.size}`);
     } else {
       failed++;
@@ -254,7 +256,18 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
         page: contact.page_name,
         error: errorMsg
       });
-      // Don't mark failed sends as sent, so they can be retried if job is rerun
+      // Remove from sent set if send failed, so it can be retried
+      // BUT: Only if it's a retryable error (not a duplicate error from Facebook)
+      if (errorMsg.includes("DUPLICATE") || errorMsg.includes("already sent")) {
+        // Keep it marked as sent to prevent retrying duplicates
+        console.log(`⚠️ [sendMessagesForPage] Keeping ${contact.contact_id} marked as sent (duplicate detected by Facebook)`);
+      } else {
+        // For other errors, remove from sent set to allow retry
+        localSentIds.delete(contact.contact_id);
+        if (sentContactIds) {
+          sentContactIds.delete(contact.contact_id);
+        }
+      }
     }
 
     await sleep(MESSAGE_SEND_THROTTLE_MS);
@@ -299,17 +312,38 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
 
   // Move to running state (allow resuming from "running" or "failed" status)
   // Use atomic update to prevent concurrent processing
+  // Only update if status is still pending/running/failed (atomic check)
   const { data: updateResult, error: updateError } = await supabaseServer
     .from("send_jobs")
-    .update({ status: "running", updated_at: new Date().toISOString() })
+    .update({ 
+      status: "running", 
+      updated_at: new Date().toISOString() 
+    })
     .eq("id", sendJob.id)
     .in("status", ["pending", "running", "failed"]) // Only update if in these states
     .select()
     .single();
   
   if (updateError || !updateResult) {
-    console.log(`[Process Send Job] Job ${sendJob.id} may have been picked up by another process, skipping`);
+    console.log(`[Process Send Job] Job ${sendJob.id} may have been picked up by another process or already completed, skipping`);
     return;
+  }
+  
+  // Double-check: if another process started it very recently (within last 5 seconds), skip
+  const jobUpdatedAt = new Date(updateResult.updated_at || updateResult.started_at);
+  const now = new Date();
+  const secondsSinceUpdate = (now.getTime() - jobUpdatedAt.getTime()) / 1000;
+  
+  // If job was updated very recently (within 2 seconds) and we're not the one who updated it, skip
+  // This prevents race conditions where multiple cron jobs pick up the same job
+  if (secondsSinceUpdate < 2 && updateResult.status === "running") {
+    // Check if we're the one who just updated it by comparing timestamps
+    const ourUpdateTime = new Date().toISOString();
+    const timeDiff = Math.abs(new Date(ourUpdateTime).getTime() - jobUpdatedAt.getTime());
+    if (timeDiff > 1000) { // More than 1 second difference means another process updated it
+      console.log(`[Process Send Job] Job ${sendJob.id} was just picked up by another process (${secondsSinceUpdate.toFixed(2)}s ago), skipping to prevent duplicate processing`);
+      return;
+    }
   }
 
   try {
@@ -691,12 +725,15 @@ export async function GET(request: NextRequest) {
     const MAX_JOBS_PER_RUN = 5;
     
     // Find pending AND running jobs (to resume incomplete jobs)
+    // BUT: Skip jobs that were updated very recently (within last 10 seconds) to prevent concurrent processing
     // For cron: process all pending/running jobs
     // For manual: only process user's jobs
+    const tenSecondsAgo = new Date(Date.now() - 10000).toISOString();
     let query = supabaseServer
       .from("send_jobs")
       .select("*")
       .in("status", ["pending", "running"]) // Also process running jobs to resume them
+      .or(`updated_at.lt.${tenSecondsAgo},updated_at.is.null`) // Only process jobs not updated in last 10 seconds
       .order("started_at", { ascending: true })
       .limit(MAX_JOBS_PER_RUN);
     
