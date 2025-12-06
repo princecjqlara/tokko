@@ -93,7 +93,7 @@ async function fetchContactsForUser(userId: string, pageId: string) {
         while (currentUrl && paginationCount < MAX_PAGES) {
           paginationCount++;
           const response: Response = await fetch(currentUrl);
-          
+
           if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
             console.error(`[Server Fetch] Error fetching conversations for ${page.name}:`, errorData);
@@ -103,7 +103,7 @@ async function fetchContactsForUser(userId: string, pageId: string) {
           const data = await response.json();
           const conversations = data.data || [];
           allConversations.push(...conversations);
-          
+
           currentUrl = data.paging?.next || null;
         }
 
@@ -117,23 +117,29 @@ async function fetchContactsForUser(userId: string, pageId: string) {
 
           if (contact && messages.length > 0) {
             const contactKey = `${contact.id}-${page.id}`;
-            
+
             if (globalSeenContactKeys.has(contactKey)) {
               continue;
             }
             globalSeenContactKeys.add(contactKey);
 
             const lastMessage = messages[0];
+            const messageDate = new Date(lastMessage.created_time).toISOString().split('T')[0];
+            const contactName = contact.name || contact.id || `User ${contact.id}`;
 
             allContacts.push({
               contact_id: contact.id,
               page_id: page.id,
               user_id: userId,
-              name: contact.name || contact.id || `User ${contact.id}`,
-              profile_pic: null,
-              tags: [],
+              contact_name: contactName,
+              page_name: page.name,
               last_message: lastMessage.message || "",
               last_message_time: lastMessage.created_time,
+              last_contact_message_date: messageDate,
+              tags: [],
+              role: "",
+              avatar: contactName.substring(0, 2).toUpperCase(),
+              date: messageDate,
               updated_at: new Date().toISOString()
             });
           }
@@ -179,10 +185,10 @@ async function triggerServerSideFetch(userId: string, pageId: string, jobId: str
   try {
     console.log(`[Webhook] Starting server-side fetch for user ${userId}, page ${pageId}, job ${jobId}`);
     const fetchResult = await fetchContactsForUser(userId, pageId);
-    
+
     if (fetchResult.success) {
       console.log(`✅ [Webhook] Server-side fetch completed for user ${userId}: ${fetchResult.contactsFound || 0} new contacts`);
-      
+
       // Update job status to completed
       const { error: updateError } = await supabaseServer
         .from("fetch_jobs")
@@ -199,7 +205,7 @@ async function triggerServerSideFetch(userId: string, pageId: string, jobId: str
       }
     } else {
       console.error(`❌ [Webhook] Server-side fetch failed for user ${userId}:`, fetchResult.error);
-      
+
       // Update job status to failed with error message
       const { error: updateError } = await supabaseServer
         .from("fetch_jobs")
@@ -216,7 +222,7 @@ async function triggerServerSideFetch(userId: string, pageId: string, jobId: str
     }
   } catch (error: any) {
     console.error(`❌ [Webhook] Error in background fetch for user ${userId}:`, error);
-    
+
     // Update job status to failed with error details
     const { error: updateError } = await supabaseServer
       .from("fetch_jobs")
@@ -308,7 +314,7 @@ async function processWebhookEvent(data: any) {
 
     for (const entry of data.entry || []) {
       const pageId = entry.id;
-      
+
       // Handle messaging events (new messages)
       if (entry.messaging && Array.isArray(entry.messaging)) {
         for (const event of entry.messaging) {
@@ -332,7 +338,7 @@ async function handleMessagingEvent(pageId: string, event: any) {
   try {
     const senderId = event.sender?.id;
     const recipientId = event.recipient?.id;
-    
+
     if (!senderId || !pageId) {
       console.log("Missing sender or page ID in messaging event");
       return;
@@ -347,7 +353,7 @@ async function handleMessagingEvent(pageId: string, event: any) {
 
     // Create or update fetch job to trigger contact fetch
     await triggerContactFetch(pageId, senderId);
-    
+
     // Also add event to events store for real-time updates
     try {
       const { addEvent } = await import("./events/route");
@@ -369,15 +375,15 @@ async function handleMessagingEvent(pageId: string, event: any) {
 async function handleConversationEvent(pageId: string, conversation: any) {
   try {
     console.log(`💬 New conversation event on page ${pageId}`);
-    
+
     // Get participants
     const participants = conversation.participants?.data || [];
     const contactId = participants.find((p: any) => p.id !== pageId)?.id;
-    
+
     if (contactId) {
       // Trigger contact fetch for this conversation
       await triggerContactFetch(pageId, contactId);
-      
+
       // Add event to events store
       try {
         const { addEvent } = await import("./events/route");
@@ -399,7 +405,7 @@ async function handleConversationEvent(pageId: string, conversation: any) {
 async function triggerContactFetch(pageId: string, contactId: string) {
   try {
     console.log(`[Webhook] triggerContactFetch called for page ${pageId}, contact ${contactId}`);
-    
+
     // Find all users who have access to this page
     const { data: userPages, error } = await supabaseServer
       .from("user_pages")
@@ -430,7 +436,7 @@ async function triggerContactFetch(pageId: string, contactId: string) {
     // Create or update fetch jobs for each user
     for (const userPage of userPages) {
       const userId = userPage.user_id;
-      
+
       try {
         // Check if there's already a running or pending job
         const { data: existingJob, error: jobCheckError } = await supabaseServer
@@ -471,12 +477,12 @@ async function triggerContactFetch(pageId: string, contactId: string) {
             })
             .select()
             .single();
-        
+
           if (insertError) {
             console.error(`[Webhook] Error creating fetch job for user ${userId}:`, insertError);
           } else {
             console.log(`✅ [Webhook] Created pending fetch job ${newJob.id} for user ${userId} due to new message from ${contactId} on ${pageName}`);
-            
+
             // Trigger server-side fetch immediately for this user
             // This ensures contacts are fetched even if the user is not logged in
             // Call the fetch function directly (don't await to avoid blocking webhook response)
@@ -496,7 +502,7 @@ async function triggerContactFetch(pageId: string, contactId: string) {
                 updated_at: new Date().toISOString(),
               })
               .eq("id", existingJob.id);
-            
+
             if (updateError) {
               console.error(`[Webhook] Error resuming job ${existingJob.id}:`, updateError);
             } else {
@@ -511,7 +517,7 @@ async function triggerContactFetch(pageId: string, contactId: string) {
                 updated_at: new Date().toISOString(),
               })
               .eq("id", existingJob.id);
-            
+
             if (updateError) {
               console.error(`[Webhook] Error updating job ${existingJob.id}:`, updateError);
             }
@@ -519,17 +525,17 @@ async function triggerContactFetch(pageId: string, contactId: string) {
             // Job is already pending, trigger fetch again in case previous one failed
             // This ensures syncing works even if the previous fetch failed silently
             console.log(`[Webhook] Re-triggering fetch for pending job ${existingJob.id} for user ${userId}`);
-            
+
             // Get current contact count
             const { count, error: countError } = await supabaseServer
               .from("contacts")
               .select("*", { count: "exact", head: true })
               .eq("user_id", userId);
-            
+
             if (countError) {
               console.error(`[Webhook] Error getting contact count for user ${userId} (retry):`, countError);
             }
-            
+
             const { error: updateError } = await supabaseServer
               .from("fetch_jobs")
               .update({
@@ -537,12 +543,12 @@ async function triggerContactFetch(pageId: string, contactId: string) {
                 updated_at: new Date().toISOString(),
               })
               .eq("id", existingJob.id);
-            
+
             if (updateError) {
               console.error(`[Webhook] Error updating pending job ${existingJob.id}:`, updateError);
             } else {
               console.log(`✅ [Webhook] Updated pending job ${existingJob.id} for user ${userId} with new message info`);
-              
+
               // Re-trigger the fetch in case the previous one failed
               triggerServerSideFetch(userId, pageId, existingJob.id, pageName, count || 0).catch((err) => {
                 console.error(`[Webhook] Background fetch error for user ${userId} (retry):`, err);

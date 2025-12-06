@@ -109,7 +109,7 @@ export async function POST(request: NextRequest) {
         while (currentUrl && paginationCount < MAX_PAGES) {
           paginationCount++;
           const response: Response = await fetch(currentUrl);
-          
+
           if (!response.ok) {
             const errorData = await response.json().catch(() => ({}));
             console.error(`[Server Fetch] Error fetching conversations for ${page.name}:`, errorData);
@@ -119,7 +119,7 @@ export async function POST(request: NextRequest) {
           const data = await response.json();
           const conversations = data.data || [];
           allConversations.push(...conversations);
-          
+
           currentUrl = data.paging?.next || null;
         }
 
@@ -133,7 +133,7 @@ export async function POST(request: NextRequest) {
 
           if (contact && messages.length > 0) {
             const contactKey = `${contact.id}-${page.id}`;
-            
+
             if (globalSeenContactKeys.has(contactKey)) {
               continue;
             }
@@ -141,16 +141,21 @@ export async function POST(request: NextRequest) {
 
             const lastMessage = messages[0];
             const messageDate = new Date(lastMessage.created_time).toISOString().split('T')[0];
+            const contactName = contact.name || contact.id || `User ${contact.id}`;
 
             allContacts.push({
               contact_id: contact.id,
               page_id: page.id,
               user_id: userId,
-              name: contact.name || contact.id || `User ${contact.id}`,
-              profile_pic: null,
-              tags: [],
+              contact_name: contactName,
+              page_name: page.name,
               last_message: lastMessage.message || "",
               last_message_time: lastMessage.created_time,
+              last_contact_message_date: messageDate,
+              tags: [],
+              role: "",
+              avatar: contactName.substring(0, 2).toUpperCase(),
+              date: messageDate,
               updated_at: new Date().toISOString()
             });
           }

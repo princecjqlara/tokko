@@ -627,22 +627,37 @@ export async function GET(request: NextRequest) {
                     contact_id: contact.contact_id || contact.id,
                     page_id: contact.page_id || contact.pageId,
                     user_id: userId,
-                    name: contact.name,
-                    profile_pic: contact.profile_pic,
+                    contact_name: contact.name,
+                    page_name: contact.page,
+                    last_message: contact.lastMessage || contact.last_message || null,
+                    last_message_time: contact.lastMessageTime || contact.last_message_time || null,
+                    last_contact_message_date: contact.lastContactMessageDate || null,
                     tags: contact.tags || [],
-                    last_message: contact.last_message,
-                    last_message_time: contact.last_message_time,
+                    role: contact.role || "",
+                    avatar: contact.avatar,
+                    date: contact.date || null,
                     updated_at: new Date().toISOString()
                   }));
 
-                  await supabaseServer
+                  const { data: timeoutUpsertData, error: timeoutUpsertError } = await supabaseServer
                     .from("contacts")
                     .upsert(contactsToUpsert, {
                       onConflict: "contact_id,page_id,user_id"
+                    })
+                    .select();
+
+                  if (timeoutUpsertError) {
+                    console.error(`❌ [Stream Route] Error saving contacts before timeout:`, {
+                      code: timeoutUpsertError.code,
+                      message: timeoutUpsertError.message,
+                      details: timeoutUpsertError.details,
+                      hint: timeoutUpsertError.hint
                     });
-                  console.log(`   ✅ [Stream Route] Saved ${remainingBatch.length} contacts before timeout`);
+                  } else {
+                    console.log(`   ✅ [Stream Route] Saved ${timeoutUpsertData?.length || remainingBatch.length} contacts before timeout`);
+                  }
                 } catch (saveError) {
-                  console.error("❌ [Stream Route] Error saving contacts before timeout:", saveError);
+                  console.error("❌ [Stream Route] Exception saving contacts before timeout:", saveError);
                 }
               }
 
@@ -1220,57 +1235,63 @@ export async function GET(request: NextRequest) {
                 }
 
                 // Batch save contacts to database every BATCH_SAVE_SIZE contacts or at the end
-                // Make it non-blocking to prevent stream from appearing stuck
+                // IMPORTANT: We need to await this to ensure contacts are actually saved!
                 if (contactsToSave.length >= BATCH_SAVE_SIZE || (i === allConversations.length - 1 && contactsToSave.length > 0)) {
                   const batchToSave = contactsToSave.splice(0, BATCH_SAVE_SIZE); // Remove from buffer
 
                   if (batchToSave.length > 0) {
-                    // Fire and forget - don't block the stream
-                    (async () => {
-                      try {
-                        const contactsToUpsert = batchToSave.map((contactData: any) => ({
-                          contact_id: contactData.id,
-                          page_id: contactData.pageId,
-                          user_id: userId,
-                          contact_name: contactData.name,
-                          page_name: contactData.page,
-                          last_message: contactData.lastMessage || null,
-                          last_message_time: contactData.lastMessageTime || null,
-                          last_contact_message_date: contactData.lastContactMessageDate || null,
-                          updated_at: contactData.updatedTime || new Date().toISOString(),
-                          tags: contactData.tags || [],
-                          role: contactData.role || "",
-                          avatar: contactData.avatar,
-                          date: contactData.date || null,
-                        }));
+                    // AWAIT the save operation - don't fire and forget!
+                    try {
+                      const contactsToUpsert = batchToSave.map((contactData: any) => ({
+                        contact_id: contactData.id,
+                        page_id: contactData.pageId,
+                        user_id: userId,
+                        contact_name: contactData.name,
+                        page_name: contactData.page,
+                        last_message: contactData.lastMessage || null,
+                        last_message_time: contactData.lastMessageTime || null,
+                        last_contact_message_date: contactData.lastContactMessageDate || null,
+                        updated_at: contactData.updatedTime || new Date().toISOString(),
+                        tags: contactData.tags || [],
+                        role: contactData.role || "",
+                        avatar: contactData.avatar,
+                        date: contactData.date || null,
+                      }));
 
-                        const dbBatchSavePromise = supabaseServer
-                          .from("contacts")
-                          .upsert(contactsToUpsert, {
-                            onConflict: "contact_id,page_id,user_id"
-                          });
+                      console.log(`   💾 [Stream Route] Attempting to save batch of ${batchToSave.length} contacts to database...`);
+                      console.log(`   💾 [Stream Route] Sample contact being saved:`, JSON.stringify(contactsToUpsert[0], null, 2));
 
-                        const saveTimeoutPromise = new Promise((_, reject) =>
-                          setTimeout(() => reject(new Error("Database batch save timeout")), 30000) // 30s for batch
-                        );
+                      const { data: upsertData, error: upsertError } = await supabaseServer
+                        .from("contacts")
+                        .upsert(contactsToUpsert, {
+                          onConflict: "contact_id,page_id,user_id"
+                        })
+                        .select();
 
-                        try {
-                          await Promise.race([
-                            dbBatchSavePromise,
-                            saveTimeoutPromise
-                          ]);
-                          console.log(`   💾 Batch saved ${batchToSave.length} contacts to database (${allContacts.length} total so far)`);
-                        } catch (batchError: any) {
-                          if (batchError.message?.includes("timeout")) {
-                            console.warn(`⏱️ Database batch save timeout, ${batchToSave.length} contacts may not be saved`);
-                          } else {
-                            console.error(`❌ Error batch saving contacts:`, batchError);
-                          }
-                        }
-                      } catch (batchError: any) {
-                        console.error(`❌ Exception batch saving contacts:`, batchError);
+                      if (upsertError) {
+                        console.error(`❌ [Stream Route] Database upsert error:`, {
+                          code: upsertError.code,
+                          message: upsertError.message,
+                          details: upsertError.details,
+                          hint: upsertError.hint
+                        });
+                        // Send error to client so they know syncing failed
+                        send({
+                          type: "status",
+                          message: `⚠️ Database save error: ${upsertError.message}. Check RLS policies or service role key.`,
+                          totalContacts: lastSentContactCount
+                        });
+                      } else {
+                        console.log(`   ✅ [Stream Route] Batch saved ${upsertData?.length || batchToSave.length} contacts to database (${allContacts.length} total so far)`);
                       }
-                    })();
+                    } catch (batchError: any) {
+                      console.error(`❌ [Stream Route] Exception batch saving contacts:`, batchError);
+                      send({
+                        type: "status",
+                        message: `⚠️ Database save exception: ${batchError.message}`,
+                        totalContacts: lastSentContactCount
+                      });
+                    }
                   }
                 }
 
@@ -1350,33 +1371,37 @@ export async function GET(request: NextRequest) {
                     date: contactData.date || null,
                   }));
 
-                  const dbBatchSavePromise = supabaseServer
+                  console.log(`   💾 [Stream Route] Final batch sample contact:`, JSON.stringify(contactsToUpsert[0], null, 2));
+
+                  const { data: finalUpsertData, error: finalUpsertError } = await supabaseServer
                     .from("contacts")
                     .upsert(contactsToUpsert, {
                       onConflict: "contact_id,page_id,user_id"
+                    })
+                    .select();
+
+                  if (finalUpsertError) {
+                    console.error(`❌ [Stream Route] Final batch upsert error for ${page.name}:`, {
+                      code: finalUpsertError.code,
+                      message: finalUpsertError.message,
+                      details: finalUpsertError.details,
+                      hint: finalUpsertError.hint
                     });
-
-                  const saveTimeoutPromise = new Promise((_, reject) =>
-                    setTimeout(() => reject(new Error("Database batch save timeout")), 30000)
-                  );
-
-                  try {
-                    await Promise.race([
-                      dbBatchSavePromise,
-                      saveTimeoutPromise
-                    ]);
-                    console.log(`   ✅ [Stream Route] Final batch saved ${remainingBatch.length} contacts to database for ${page.name}`);
-                  } catch (batchError: any) {
-                    if (batchError.message?.includes("timeout")) {
-                      console.warn(`⏱️ [Stream Route] Final database batch save timeout for ${page.name}, ${remainingBatch.length} contacts may not be saved`);
-                    } else {
-                      console.error(`❌ [Stream Route] Error final batch saving contacts for ${page.name}:`, batchError);
-                    }
-                    // Continue even if save fails - don't block stream completion
+                    send({
+                      type: "status",
+                      message: `⚠️ Final batch save error: ${finalUpsertError.message}`,
+                      totalContacts: lastSentContactCount
+                    });
+                  } else {
+                    console.log(`   ✅ [Stream Route] Final batch saved ${finalUpsertData?.length || remainingBatch.length} contacts to database for ${page.name}`);
                   }
                 } catch (batchError: any) {
                   console.error(`❌ [Stream Route] Exception final batch saving contacts for ${page.name}:`, batchError);
-                  // Continue even if save fails - don't block stream completion
+                  send({
+                    type: "status",
+                    message: `⚠️ Final batch save exception: ${batchError.message}`,
+                    totalContacts: lastSentContactCount
+                  });
                 }
               } else {
                 console.log(`   ℹ️ [Stream Route] No remaining contacts to save for ${page.name}`);
