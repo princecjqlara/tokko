@@ -561,71 +561,62 @@ export async function POST(request: NextRequest) {
           const firstName = contact.contact_name?.split(' ')[0] || 'there';
           personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
 
-          // If attachment is provided, ONLY send media (no separate text message)
-          // If no attachment, send text only
+          // IMPORTANT: Send ONLY ONE message per contact
+          // If attachment exists, send ONLY media (no separate text)
+          // If no attachment, send ONLY text
           if (attachment && attachment.url) {
-            try {
-              // Determine attachment type (image, video, audio, or file)
-              const attachmentType = attachment.type || "file";
+            // Determine attachment type (image, video, audio, or file)
+            const attachmentType = attachment.type || "file";
 
-              // Send ONLY media attachment (no separate text message to avoid duplicates)
-              const mediaPayload: any = {
-                recipient: {
-                  id: contact.contact_id
-                },
-                message: {
-                  attachment: {
-                    type: attachmentType,
-                    payload: {
-                      url: attachment.url,
-                      is_reusable: true
-                    }
+            // Send ONLY media attachment (no separate text message)
+            const mediaPayload: any = {
+              recipient: {
+                id: contact.contact_id
+              },
+              message: {
+                attachment: {
+                  type: attachmentType,
+                  payload: {
+                    url: attachment.url,
+                    is_reusable: true
                   }
-                },
-                messaging_type: "MESSAGE_TAG",
-                tag: "ACCOUNT_UPDATE"
-              };
-
-              const mediaResponse = await fetch(
-                `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-                {
-                  method: "POST",
-                  headers: {
-                    "Content-Type": "application/json",
-                  },
-                  body: JSON.stringify(mediaPayload),
                 }
-              );
+              },
+              messaging_type: "MESSAGE_TAG",
+              tag: "ACCOUNT_UPDATE"
+            };
 
-              const mediaData = await mediaResponse.json();
-
-              if (mediaResponse.ok && !mediaData.error) {
-                results.success++;
-                const typeLabel = attachmentType === "image" ? "image" :
-                  attachmentType === "video" ? "video" :
-                    attachmentType === "audio" ? "audio" : "file";
-                console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
-              } else {
-                results.failed++;
-                const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
-                console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
-                results.errors.push({
-                  contact: contact.contact_name,
-                  page: contact.page_name,
-                  error: errorMsg
-                });
+            const mediaResponse = await fetch(
+              `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(mediaPayload),
               }
-            } catch (mediaError: any) {
+            );
+
+            const mediaData = await mediaResponse.json();
+
+            if (mediaResponse.ok && !mediaData.error) {
+              results.success++;
+              const typeLabel = attachmentType === "image" ? "image" :
+                attachmentType === "video" ? "video" :
+                  attachmentType === "audio" ? "audio" : "file";
+              console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
+            } else {
               results.failed++;
-              console.error(`❌ Error sending media to ${contact.contact_name}:`, mediaError);
+              const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
+              console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
               results.errors.push({
                 contact: contact.contact_name,
                 page: contact.page_name,
-                error: mediaError.message || "Unknown error"
+                error: errorMsg
               });
             }
           } else {
-            // No attachment - send text message only
+            // No attachment - send ONLY text message
             const textPayload: any = {
               recipient: {
                 id: contact.contact_id
@@ -652,7 +643,7 @@ export async function POST(request: NextRequest) {
 
             if (sendResponse.ok && !sendData.error) {
               results.success++;
-              console.log(`✅ Sent message to ${contact.contact_name} (${contact.contact_id})`);
+              console.log(`✅ Sent text message to ${contact.contact_name} (${contact.contact_id})`);
             } else {
               results.failed++;
               const errorMsg = sendData.error?.message || "Unknown error";

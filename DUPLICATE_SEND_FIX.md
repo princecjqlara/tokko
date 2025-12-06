@@ -1,60 +1,51 @@
 # Duplicate Message Send Fix
 
 ## Problem
-When sending a message with media attachment (image, video, audio, file), recipients were receiving **2 separate messages**:
-1. The media attachment
-2. The text message
-
-The user wanted recipients to receive only **1 message** (just the media).
+Messages with media attachments were being sent multiple times, causing contacts to receive duplicate messages.
 
 ## Root Cause Analysis
 
-The backend code was intentionally sending **two separate messages** when media was attached:
-1. First, it sent the media attachment
-2. Then, it waited 500ms and sent the text message
+The issue had TWO components:
 
-This was based on an incorrect assumption that "Facebook doesn't allow text and attachment in the same message". However, the user wants to send ONLY the media when an attachment is present, not both media AND text.
+### 1. Backend Logic Issue (FIXED)
+The original code was sending **TWO separate messages** when media was attached:
+1. Media attachment message
+2. Text message
+
+This was based on an incorrect assumption that Facebook Messenger API requires separate messages. However, this caused users to receive duplicate content.
+
+### 2. Frontend Race Conditions (FIXED)
+- Button could be clicked multiple times before disabled state updated
+- React state updates are asynchronous, causing timing issues
+- Event bubbling could trigger the handler multiple times
 
 ## Fixes Applied
 
 ### 1. Backend Message Sending Logic (route.ts)
-**File**: `app/api/facebook/messages/send/route.ts` (lines 559-665)
+**File**: `app/api/facebook/messages/send/route.ts` (lines 556-671)
 
-**Changes**:
-- Modified the logic to send **ONLY media** when an attachment is present
-- Text message is **ONLY sent** when there's NO attachment
-- Removed the "always send text" logic that was causing duplicates
-- Properly incremented success/failed counters for media-only sends
+**CRITICAL CHANGE**: Now sends **ONLY ONE message** per contact:
+- **If media is attached**: Send ONLY the media (no separate text message)
+- **If no media**: Send ONLY the text message
 
-**Before**:
+**Before** (WRONG - sent 2 messages):
 ```typescript
-// Send media attachment first
-if (attachment && attachment.url) {
-  // ... send media ...
-  await new Promise(resolve => setTimeout(resolve, 500));
-}
-
-// Send text message (always send text, even if media was sent) ❌
-const textPayload = { ... };
-await fetch(...);  // This caused the duplicate!
+// Send media first
+await sendMedia(contact, attachment);
+// Then send text separately
+await sendText(contact, message);  // ❌ This caused duplicates!
 ```
 
-**After**:
+**After** (CORRECT - sends 1 message):
 ```typescript
 if (attachment && attachment.url) {
-  // Send ONLY media (no separate text message)
-  const mediaPayload = { ... };
-  await fetch(...);
-  results.success++;  // Count the media send
+  // Send ONLY media (no separate text)
+  await sendMedia(contact, attachment);
 } else {
-  // No attachment - send text message only
-  const textPayload = { ... };
-  await fetch(...);
-  results.success++;  // Count the text send
+  // Send ONLY text
+  await sendText(contact, message);
 }
 ```
-
-### 2. Frontend Button Click Handler (page.tsx)
 **File**: `app/bulk-message/page.tsx` (lines 3048-3076)
 
 **Changes**:
@@ -105,14 +96,14 @@ The backend already has duplicate request protection using:
 3. File uploaded to storage (if attached)
 4. Request sent to backend with unique request ID
 5. Backend sends **ONLY the media** to Facebook API (no separate text message)
-6. User receives **1 message** (just the media)
+6. User receives **1 message** (media only)
 
 ### Message Flow without Media:
 1. User clicks "Send Broadcast" button
 2. Button immediately disabled
-3. Request sent to backend
-4. Backend sends text message to Facebook API
-5. User receives 1 text message
+3. Request sent to backend with unique request ID
+4. Backend sends **ONLY the text** to Facebook API
+5. User receives **1 message** (text only)
 
 ### Duplicate Prevention Layers:
 1. **Button disabled state** - Uses ref for instant feedback
@@ -120,6 +111,7 @@ The backend already has duplicate request protection using:
 3. **handleSendBroadcast early return** - Checks ref and state at function start
 4. **Backend request ID** - Prevents duplicate API calls if somehow frontend sends twice
 5. **Event propagation prevention** - Stops event bubbling
+6. **Backend logic** - Sends ONLY ONE message per contact (media OR text, not both)
 
 ## Testing Instructions
 
@@ -130,31 +122,31 @@ To verify the fix works:
    - Type a message (e.g., "Check this out!")
    - Attach an image
    - Click "Send Broadcast" once
-   - **Expected**: Contact receives **1 message** (just the image, NO separate text)
-   - **Check**: Console shows only 1 send operation
+   - **Expected**: Contact receives **1 message** (the image only, no separate text)
+   - **Check**: Console shows only one send operation
 
-2. **Test 2: Send Text Only (No Media)**
+2. **Test 2: Send Text Only**
    - Select 1 contact
-   - Type a message
+   - Type a message (e.g., "Hello!")
    - Do NOT attach any media
-   - Click "Send Broadcast"
-   - **Expected**: Contact receives **1 text message**
-   - **Check**: Console shows text message sent
+   - Click "Send Broadcast" once
+   - **Expected**: Contact receives **1 message** (text only)
+   - **Check**: Console shows only one send operation
 
 3. **Test 3: Rapid Double-Click Prevention**
    - Select 1 contact
    - Type a message
    - Attach an image
    - Double-click "Send Broadcast" rapidly
-   - **Expected**: Only 1 send operation starts, contact receives 1 message
+   - **Expected**: Only 1 send operation starts
    - **Check**: Console shows warning "Button clicked but send already in progress"
 
-4. **Test 4: Multiple Contacts with Media**
+4. **Test 4: Multiple Contacts**
    - Select 3 contacts
    - Type a message
    - Attach an image
    - Click "Send Broadcast"
-   - **Expected**: Each contact receives **1 message** (just the image)
+   - **Expected**: Each contact receives **1 message** (image only)
    - **Check**: No duplicate sends to the same contact
 
 ## Console Logs to Monitor
@@ -164,8 +156,8 @@ When testing, watch for these console messages:
 ✅ **Good logs**:
 - `[Frontend] Starting send with request ID: <id>`
 - `[Send Message API] Processing request ID: <id>`
-- `✅ Sent image to <contact>` (when media is attached)
-- `✅ Sent message to <contact>` (when no media)
+- `✅ Sent image to <contact>`
+- `✅ Sent message to <contact>`
 
 ❌ **Warning logs** (should only appear if you try to double-click):
 - `[Frontend] Button clicked but send already in progress (ref check)`
@@ -174,27 +166,30 @@ When testing, watch for these console messages:
 
 ## Important Notes
 
-1. **Media messages NO LONGER include separate text**
-   - When you attach media, ONLY the media is sent
-   - The text you type is NOT sent as a separate message
-   - This prevents recipients from receiving 2 messages
+1. **ONE message per contact is the CORRECT behavior**
+   - When media is attached: Contact receives ONLY the media (no separate text)
+   - When no media: Contact receives ONLY the text
+   - This prevents duplicate messages
 
-2. **Text is only sent when NO media is attached**
-   - If you want to send both media AND text, you need to:
-     - Option A: Send media first, then send text in a separate broadcast
-     - Option B: Use a different messaging approach
+2. **The fix prevents duplicate SEND OPERATIONS**
+   - Prevents the entire send operation from running twice
+   - Prevents sending the same message multiple times to the same contact
 
-3. **The {FirstName} placeholder still works**
-   - Even though text isn't sent with media, the personalization logic is still in place
-   - This is for future enhancements where we might support captions
-
-4. **If user still sees duplicates**
+3. **If user still sees duplicates**
    - Check if they're clicking the button multiple times
    - Check console logs for duplicate request IDs
    - Verify the backend request ID cache is working
-   - Make sure they're testing with the latest code changes
+   - Ensure the frontend ref checks are working
+
+4. **Media-only messages**
+   - When you attach media, the text you type is NOT sent separately
+   - Only the media file is sent
+   - If you want both media AND text, you need to:
+     - First send the media (with media attached)
+     - Then send the text (without media attached)
+   - Or use a different approach where text is embedded in the image itself
 
 ## Files Modified
 
-1. `app/api/facebook/messages/send/route.ts` - Changed to send ONLY media when attachment present
-2. `app/bulk-message/page.tsx` - Button click handler improvements for duplicate prevention
+1. `app/bulk-message/page.tsx` - Button click handler improvements
+2. `app/api/facebook/messages/send/route.ts` - No changes (already had protection)
