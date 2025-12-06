@@ -3,6 +3,10 @@
     {
       "path": "/api/facebook/messages/process-scheduled",
       "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/facebook/messages/process-send-job",
+      "schedule": "*/2 * * * *"
     }
   ]
 }
