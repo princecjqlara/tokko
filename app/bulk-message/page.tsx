@@ -138,6 +138,55 @@ export default function BulkMessagePage() {
     const [scheduledNotice, setScheduledNotice] = useState<{ id: number; scheduledFor: string; total: number } | null>(null);
     const [isCancellingSchedule, setIsCancellingSchedule] = useState(false);
     
+    // Send job progress tracking
+    const [sendJobProgress, setSendJobProgress] = useState<{
+        jobId: number;
+        status: string;
+        sent: number;
+        failed: number;
+        total: number;
+        errors: any[];
+        startedAt?: string;
+        completedAt?: string;
+    } | null>(null);
+    
+    // Poll job status when a job is active
+    useEffect(() => {
+        if (!sendJobProgress || sendJobProgress.status === "completed" || sendJobProgress.status === "failed") {
+            return;
+        }
+        
+        const pollInterval = setInterval(async () => {
+            try {
+                const response = await fetch(`/api/facebook/messages/send-job-status?jobId=${sendJobProgress.jobId}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.success && data.job) {
+                        setSendJobProgress({
+                            jobId: data.job.id,
+                            status: data.job.status,
+                            sent: data.job.sent_count || 0,
+                            failed: data.job.failed_count || 0,
+                            total: data.job.total_count || sendJobProgress.total,
+                            errors: data.job.errors || [],
+                            startedAt: data.job.started_at,
+                            completedAt: data.job.completed_at
+                        });
+                        
+                        // Stop polling if job is complete
+                        if (data.job.status === "completed" || data.job.status === "failed") {
+                            clearInterval(pollInterval);
+                        }
+                    }
+                }
+            } catch (error) {
+                console.error("Error polling job status:", error);
+            }
+        }, 3000); // Poll every 3 seconds
+        
+        return () => clearInterval(pollInterval);
+    }, [sendJobProgress?.jobId, sendJobProgress?.status]);
+    
     // Real-time fetching state
     const [fetchingProgress, setFetchingProgress] = useState<{
         isFetching: boolean;
@@ -1815,8 +1864,15 @@ export default function BulkMessagePage() {
                         total: data.results.total || selectedContactIds.length || 0
                     });
                 } else if (data.results?.backgroundJob) {
-                    // Large batch is being processed in background
-                    alert(`Large batch detected (${data.results.total} contacts). Processing in background. Job ID: ${data.results.jobId}\n\n${data.results.message || 'Check back later for results.'}`);
+                    // Large batch is being processed in background - start tracking progress
+                    setSendJobProgress({
+                        jobId: data.results.jobId,
+                        status: "pending",
+                        sent: 0,
+                        failed: 0,
+                        total: data.results.total || selectedContactIds.length || 0,
+                        errors: []
+                    });
                 } else if (data.results?.partial) {
                     // Partial results due to timeout
                     alert(`${data.results.message}\n\nSent: ${data.results.sent}\nFailed: ${data.results.failed}\nRemaining: ${data.results.total - data.results.sent - data.results.failed}`);
@@ -2109,6 +2165,94 @@ export default function BulkMessagePage() {
                                 {isCancellingSchedule ? "Cancelling..." : "Cancel schedule"}
                             </button>
                         </div>
+                    </div>
+                )}
+
+                {sendJobProgress && (
+                    <div className="mb-6 rounded-xl border border-green-500/40 bg-green-500/10 px-4 py-4 text-sm text-green-100">
+                        <div className="flex items-center justify-between mb-3">
+                            <div className="font-semibold text-green-200">
+                                {sendJobProgress.status === "completed" ? "✅ Messages sent successfully!" :
+                                 sendJobProgress.status === "failed" ? "❌ Sending failed" :
+                                 sendJobProgress.status === "running" ? "📤 Sending messages..." :
+                                 "⏳ Queued for sending"}
+                            </div>
+                            <button
+                                onClick={() => setSendJobProgress(null)}
+                                className="text-green-300 hover:text-green-100 transition"
+                            >
+                                <XIcon size={16} />
+                            </button>
+                        </div>
+                        
+                        {/* Progress Bar */}
+                        <div className="mb-3">
+                            <div className="flex items-center justify-between text-xs mb-1">
+                                <span className="text-green-200">
+                                    {sendJobProgress.sent + sendJobProgress.failed} of {sendJobProgress.total} processed
+                                </span>
+                                <span className="text-green-300">
+                                    {sendJobProgress.total > 0 ? Math.round(((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100) : 0}%
+                                </span>
+                            </div>
+                            <div className="w-full bg-green-900/30 rounded-full h-2 overflow-hidden">
+                                <div 
+                                    className="h-full bg-green-500 transition-all duration-300 rounded-full"
+                                    style={{ 
+                                        width: `${sendJobProgress.total > 0 ? ((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100 : 0}%` 
+                                    }}
+                                />
+                            </div>
+                        </div>
+                        
+                        {/* Stats */}
+                        <div className="grid grid-cols-3 gap-4 text-xs">
+                            <div>
+                                <div className="text-green-300/60">Total</div>
+                                <div className="text-green-200 font-semibold">{sendJobProgress.total}</div>
+                            </div>
+                            <div>
+                                <div className="text-green-300/60">Sent</div>
+                                <div className="text-green-200 font-semibold">{sendJobProgress.sent}</div>
+                            </div>
+                            <div>
+                                <div className="text-green-300/60">Failed</div>
+                                <div className="text-red-300 font-semibold">{sendJobProgress.failed}</div>
+                            </div>
+                        </div>
+                        
+                        {/* Errors */}
+                        {sendJobProgress.errors && sendJobProgress.errors.length > 0 && (
+                            <div className="mt-3 pt-3 border-t border-green-500/20">
+                                <div className="text-xs text-green-300/80 mb-2">
+                                    {sendJobProgress.errors.length} error(s):
+                                </div>
+                                <div className="max-h-32 overflow-y-auto space-y-1">
+                                    {sendJobProgress.errors.slice(0, 5).map((error: any, idx: number) => (
+                                        <div key={idx} className="text-xs text-red-300 bg-red-900/20 px-2 py-1 rounded">
+                                            {error.contact || error.page}: {error.error || JSON.stringify(error)}
+                                        </div>
+                                    ))}
+                                    {sendJobProgress.errors.length > 5 && (
+                                        <div className="text-xs text-green-300/60">
+                                            ... and {sendJobProgress.errors.length - 5} more error(s)
+                                        </div>
+                                    )}
+                                </div>
+                            </div>
+                        )}
+                        
+                        {/* Status message */}
+                        {sendJobProgress.status === "running" && (
+                            <div className="mt-3 text-xs text-green-300/80 italic">
+                                Processing messages in the background. This page will update automatically.
+                            </div>
+                        )}
+                        {sendJobProgress.status === "completed" && sendJobProgress.completedAt && (
+                            <div className="mt-3 text-xs text-green-300/80">
+                                Completed at {new Date(sendJobProgress.completedAt).toLocaleString()}
+                            </div>
+                        )}
                     </div>
                 )}
 
