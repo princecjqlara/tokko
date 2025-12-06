@@ -117,6 +117,7 @@ export default function BulkMessagePage() {
     const [selectedTag, setSelectedTag] = useState("All");
     const [selectedPage, setSelectedPage] = useState("All Pages");
     const [searchQuery, setSearchQuery] = useState("");
+    const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(""); // Debounced for performance with large datasets
     const [pageSearchQuery, setPageSearchQuery] = useState("");
     const [showPageDropdown, setShowPageDropdown] = useState(false);
     const [dateFilter, setDateFilter] = useState("");
@@ -275,6 +276,17 @@ export default function BulkMessagePage() {
         setContacts([]);
     }, []);
 
+    // Debounce search query for better performance with large datasets (50k+ contacts)
+    useEffect(() => {
+        const handler = setTimeout(() => {
+            setDebouncedSearchQuery(searchQuery);
+        }, 300); // 300ms debounce
+
+        return () => {
+            clearTimeout(handler);
+        };
+    }, [searchQuery]);
+
     // Close profile dropdown when clicking outside
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -312,6 +324,7 @@ export default function BulkMessagePage() {
         const checkClosed = setInterval(() => {
             if (popup?.closed) {
                 clearInterval(checkClosed);
+                window.removeEventListener('message', messageHandler); // Clean up listener
                 // Reload page to check for new session
                 window.location.reload();
             }
@@ -510,10 +523,34 @@ export default function BulkMessagePage() {
                         isConnectingRef.current = false;
                         return;
                     }
+
+                    // Handle other errors with user-facing message
+                    const errorMessage = errorData.error || errorData.message || `Server error (${existingResponse.status})`;
+                    setFetchingProgress(prev => ({
+                        ...prev,
+                        isFetching: false,
+                        message: `⚠️ Error loading contacts: ${errorMessage}`
+                    }));
+                    setIsLoading(false);
+                    isFetchingRef.current = false;
+                    isLoadingContactsRef.current = false;
+                    isConnectingRef.current = false;
+                    return;
                 }
-            } catch (e) {
+            } catch (e: any) {
                 console.error("[Frontend] Error loading existing contacts:", e);
-                console.log("No existing contacts found, starting fresh");
+                // Show user-friendly error message
+                const errorMessage = e.message || "Network error while loading contacts";
+                setFetchingProgress(prev => ({
+                    ...prev,
+                    isFetching: false,
+                    message: `⚠️ Error: ${errorMessage}. Please check your connection and try again.`
+                }));
+                setIsLoading(false);
+                isFetchingRef.current = false;
+                isLoadingContactsRef.current = false;
+                isConnectingRef.current = false;
+                return;
             } finally {
                 isLoadingContactsRef.current = false;
             }
@@ -884,15 +921,50 @@ export default function BulkMessagePage() {
                             totalContacts: 0
                         }));
                     }
+                } else {
+                    // Handle non-OK response
+                    const errorText = await existingResponse.text();
+                    let errorData;
+                    try {
+                        errorData = JSON.parse(errorText);
+                    } catch {
+                        errorData = { error: errorText };
+                    }
+
+                    console.error("[Frontend] Error loading contacts from database:", errorData);
+
+                    // Check if it's a rate limit error
+                    if (errorData.error === "Facebook API rate limit reached" || errorData.details?.includes("rate limit")) {
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            isFetching: false,
+                            message: "⚠️ Facebook API rate limit reached. Please wait a few minutes and try again."
+                        }));
+                    } else {
+                        // Show other errors to the user
+                        const errorMessage = errorData.error || errorData.message || `Server error (${existingResponse.status})`;
+                        setFetchingProgress(prev => ({
+                            ...prev,
+                            isFetching: false,
+                            message: `⚠️ Error loading contacts: ${errorMessage}`
+                        }));
+                    }
                 }
-            } catch (e) {
+            } catch (e: any) {
                 console.error("[Frontend] Error loading existing contacts:", e);
                 // On error, only reset if we don't have contacts
                 if (contacts.length === 0) {
                     setContacts([]);
                     setFetchingProgress(prev => ({
                         ...prev,
-                        totalContacts: 0
+                        totalContacts: 0,
+                        message: `⚠️ Error: ${e.message || "Network error while loading contacts"}`
+                    }));
+                } else {
+                    // If we have contacts, just show the error but keep them
+                    setFetchingProgress(prev => ({
+                        ...prev,
+                        message: `⚠️ Error refreshing contacts: ${e.message || "Network error"}`
                     }));
                 }
             } finally {
@@ -957,13 +1029,34 @@ export default function BulkMessagePage() {
                                             message: job.message || "No contacts found"
                                         }));
                                     }
+                                } else {
+                                    // Handle non-OK response
+                                    const errorText = await existingResponse.text();
+                                    let errorData;
+                                    try {
+                                        errorData = JSON.parse(errorText);
+                                    } catch {
+                                        errorData = { error: errorText };
+                                    }
+
+                                    console.error("[Frontend] Error loading contacts for reconnect:", errorData);
+                                    const errorMessage = errorData.error || errorData.message || `Server error (${existingResponse.status})`;
+                                    setFetchingProgress(prev => ({
+                                        ...prev,
+                                        message: `⚠️ Error loading contacts: ${errorMessage}`
+                                    }));
                                 }
-                            } catch (e) {
+                            } catch (e: any) {
                                 console.error("[Frontend] Error loading existing contacts:", e);
                                 // Don't reset contacts on error if we have some
                                 if (contacts.length === 0) {
                                     setContacts([]);
                                 }
+                                // Show error message to user
+                                setFetchingProgress(prev => ({
+                                    ...prev,
+                                    message: `⚠️ Error loading contacts: ${e.message || "Network error"}`
+                                }));
                             } finally {
                                 isLoadingContactsRef.current = false;
                             }
@@ -1405,6 +1498,7 @@ export default function BulkMessagePage() {
     }, [fetchingProgress.totalContacts, fetchingProgress.isFetching, contacts.length]);
 
     // Filter contacts - show contacts from all connected pages by default, or filter by selected page
+    // Uses debounced search query for better performance with large datasets (50k+ contacts)
     const filteredContacts = useMemo(() => {
         return contacts.filter((contact) => {
             const matchesTag = selectedTag === "All" || (contact.tags && contact.tags.includes(selectedTag));
@@ -1414,8 +1508,11 @@ export default function BulkMessagePage() {
             const contactPageName = contact.page || contact.page_name || contact.pageName;
             const matchesPage = selectedPage === "All Pages" || contactPageName === selectedPage;
 
-            const matchesSearch = contact.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                contact.role?.toLowerCase().includes(searchQuery.toLowerCase());
+            // Use debounced search query for better performance
+            const searchLower = debouncedSearchQuery.toLowerCase();
+            const matchesSearch = !debouncedSearchQuery ||
+                contact.name?.toLowerCase().includes(searchLower) ||
+                contact.role?.toLowerCase().includes(searchLower);
 
             // Date filtering: Match if contact has activity (message or conversation) on that date
             // Use lastContactMessageDate if available (contact sent message), otherwise use date (conversation date)
@@ -1424,7 +1521,7 @@ export default function BulkMessagePage() {
 
             return matchesTag && matchesSearch && matchesPage && matchesDate;
         });
-    }, [selectedTag, selectedPage, searchQuery, dateFilter, contacts, tags]);
+    }, [selectedTag, selectedPage, debouncedSearchQuery, dateFilter, contacts, tags]);
 
     // Update pages list from contacts when contacts change
     useEffect(() => {
@@ -2328,6 +2425,7 @@ export default function BulkMessagePage() {
                                 const checkClosed = setInterval(() => {
                                     if (popup?.closed) {
                                         clearInterval(checkClosed);
+                                        window.removeEventListener('message', messageHandler); // Clean up listener
                                         // Reload page to check for new session
                                         window.location.reload();
                                     }
