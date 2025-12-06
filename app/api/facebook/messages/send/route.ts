@@ -11,6 +11,19 @@ export const dynamic = "force-dynamic";
 // Threshold for using background jobs (to avoid timeout)
 const BACKGROUND_JOB_THRESHOLD = 100;
 
+// Supabase IN() query limit - chunk queries to avoid "Bad Request" errors
+const CONTACT_FETCH_CHUNK = 200;
+
+// Helper function to chunk arrays
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -60,33 +73,15 @@ export async function POST(request: NextRequest) {
       // Add timeout to database queries (10 seconds)
       const queryTimeout = 10000;
       
+      // Chunk contactIds to avoid Supabase IN() query limits
+      // Supabase has a limit on the number of items in IN() clauses (typically 200-1000)
+      contacts = [];
+      contactsError = null;
+      
       // First, try to fetch by database id (in case frontend is using database IDs)
-      const firstQueryPromise = supabaseServer
-        .from("contacts")
-        .select(`
-          id,
-          contact_id,
-          page_id,
-          contact_name,
-          page_name
-        `)
-        .in("id", contactIds)
-        .eq("user_id", userId);
-
-      const timeoutPromise = new Promise((_, reject) => 
-        setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
-      );
-
-      const firstQuery = await Promise.race([firstQueryPromise, timeoutPromise]) as any;
-
-      contacts = firstQuery.data;
-      contactsError = firstQuery.error;
-
-      // If no contacts found by database id, try by contact_id
-      if ((!contacts || contacts.length === 0) && contactIds.length > 0) {
-        console.log("[Send Message API] No contacts found by database id, trying by contact_id");
-        
-        const secondQueryPromise = supabaseServer
+      // Process in chunks to avoid "Bad Request" errors
+      for (const chunk of chunkArray(contactIds, CONTACT_FETCH_CHUNK)) {
+        const chunkQueryPromise = supabaseServer
           .from("contacts")
           .select(`
             id,
@@ -95,17 +90,82 @@ export async function POST(request: NextRequest) {
             contact_name,
             page_name
           `)
-          .in("contact_id", contactIds)
+          .in("id", chunk)
           .eq("user_id", userId);
-        
-        const secondTimeoutPromise = new Promise((_, reject) => 
+
+        const timeoutPromise = new Promise((_, reject) => 
           setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
         );
+
+        try {
+          const chunkQuery = await Promise.race([chunkQueryPromise, timeoutPromise]) as any;
+          
+          if (chunkQuery.error) {
+            console.error(`[Send Message API] Error fetching chunk by id:`, chunkQuery.error);
+            contactsError = chunkQuery.error;
+            // Continue to next chunk or try contact_id
+          } else if (chunkQuery.data && chunkQuery.data.length > 0) {
+            contacts.push(...chunkQuery.data);
+          }
+        } catch (chunkError: any) {
+          console.error(`[Send Message API] Error in chunk query:`, chunkError);
+          if (!contactsError) {
+            contactsError = chunkError;
+          }
+        }
+      }
+
+      // If no contacts found by database id, try by contact_id
+      if ((!contacts || contacts.length === 0) && contactIds.length > 0) {
+        console.log("[Send Message API] No contacts found by database id, trying by contact_id");
+        contacts = []; // Reset for contact_id query
         
-        const result = await Promise.race([secondQueryPromise, secondTimeoutPromise]) as any;
-        
-        contacts = result.data;
-        contactsError = result.error;
+        // Process in chunks
+        for (const chunk of chunkArray(contactIds, CONTACT_FETCH_CHUNK)) {
+          const chunkQueryPromise = supabaseServer
+            .from("contacts")
+            .select(`
+              id,
+              contact_id,
+              page_id,
+              contact_name,
+              page_name
+            `)
+            .in("contact_id", chunk)
+            .eq("user_id", userId);
+          
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Database query timeout")), queryTimeout)
+          );
+          
+          try {
+            const chunkQuery = await Promise.race([chunkQueryPromise, timeoutPromise]) as any;
+            
+            if (chunkQuery.error) {
+              console.error(`[Send Message API] Error fetching chunk by contact_id:`, chunkQuery.error);
+              contactsError = chunkQuery.error;
+            } else if (chunkQuery.data && chunkQuery.data.length > 0) {
+              contacts.push(...chunkQuery.data);
+            }
+          } catch (chunkError: any) {
+            console.error(`[Send Message API] Error in chunk query (contact_id):`, chunkError);
+            if (!contactsError) {
+              contactsError = chunkError;
+            }
+          }
+        }
+      }
+      
+      // Remove duplicates (in case same contact appears in multiple chunks)
+      if (contacts && contacts.length > 0) {
+        const uniqueContacts = new Map();
+        for (const contact of contacts) {
+          const key = `${contact.id}_${contact.contact_id}`;
+          if (!uniqueContacts.has(key)) {
+            uniqueContacts.set(key, contact);
+          }
+        }
+        contacts = Array.from(uniqueContacts.values());
       }
     } catch (dbError: any) {
       console.error("[Send Message API] Database error fetching contacts:", dbError);
