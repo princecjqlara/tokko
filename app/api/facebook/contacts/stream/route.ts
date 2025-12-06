@@ -566,6 +566,8 @@ export async function GET(request: NextRequest) {
 
           // Reset allContacts array for this stream
           allContacts = [];
+          // Global pending contacts buffer - accessible by timeout handler
+          let globalPendingContacts: any[] = [];
           // Use a global Set to track unique contacts across ALL pages (not just per-page)
           // This prevents counting the same contact multiple times if they appear in multiple pages
           const globalSeenContactKeys = new Set<string>();
@@ -619,7 +621,36 @@ export async function GET(request: NextRequest) {
               // Update processedPagesCount for timeout handler
               processedPagesCount = processedPages;
 
-              // Save any remaining contacts before completing
+              // First, save any pending contacts that haven't been batched yet
+              if (globalPendingContacts.length > 0) {
+                console.log(`   💾 [Stream Route] Saving ${globalPendingContacts.length} pending contacts before timeout...`);
+                try {
+                  const { data: pendingData, error: pendingError } = await supabaseServer
+                    .from("contacts")
+                    .upsert(globalPendingContacts.map((c: any) => c.contactToSave), {
+                      onConflict: "contact_id,page_id,user_id"
+                    })
+                    .select('contact_id');
+
+                  if (pendingError) {
+                    console.error(`❌ [Stream Route] Error saving pending contacts:`, pendingError.message);
+                  } else {
+                    console.log(`   ✅ [Stream Route] TIMEOUT SAVE: Saved ${pendingData?.length || globalPendingContacts.length} pending contacts`);
+                    // Mark as saved
+                    for (const item of globalPendingContacts) {
+                      if (!globalSeenContactKeys.has(item.contactKey)) {
+                        globalSeenContactKeys.add(item.contactKey);
+                        allContacts.push(item.contactData);
+                      }
+                    }
+                    globalPendingContacts = [];
+                  }
+                } catch (pendingSaveError) {
+                  console.error("❌ [Stream Route] Exception saving pending contacts:", pendingSaveError);
+                }
+              }
+
+              // Save any remaining contacts before completing (legacy - may not be needed now)
               if (allContacts.length > 0) {
                 try {
                   const remainingBatch = [...allContacts];
@@ -983,7 +1014,7 @@ export async function GET(request: NextRequest) {
               let pageContacts = 0;
               const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates within this page
               const processedContactKeys = new Set<string>(); // Track contacts already processed in this page
-              const pendingContacts: any[] = []; // Batch buffer - save every 100 contacts
+              // Use globalPendingContacts buffer for batch saves (accessible by timeout handler)
 
               console.log(`   🔄 [Stream Route] Starting conversation processing loop for ${page.name} (${allConversations.length} conversations)`);
 
@@ -991,7 +1022,7 @@ export async function GET(request: NextRequest) {
 
               // Process conversations for progress tracking
               const BATCH_SIZE = 50;
-              const BATCH_SAVE_SIZE = 100; // Save every 100 contacts - confirmed working before proceeding
+              const BATCH_SAVE_SIZE = 25; // Save every 25 contacts - more frequent saves to avoid losing data on timeout
               const PROGRESS_UPDATE_INTERVAL = 10; // Update every 10 conversations for real-time feel
               let processedCount = 0;
               const processingStartTime = Date.now();
@@ -1159,11 +1190,11 @@ export async function GET(request: NextRequest) {
                         avatar: contactData.avatar,
                         date: contactData.date || null,
                       };
-                      pendingContacts.push({ contactData, contactToSave, contactKey });
+                      globalPendingContacts.push({ contactData, contactToSave, contactKey });
 
                       // Save in batches of 100 contacts - WAIT for confirmation before proceeding
-                      if (pendingContacts.length >= BATCH_SAVE_SIZE) {
-                        const batchToSave = pendingContacts.splice(0, BATCH_SAVE_SIZE);
+                      if (globalPendingContacts.length >= BATCH_SAVE_SIZE) {
+                        const batchToSave = globalPendingContacts.splice(0, BATCH_SAVE_SIZE);
                         console.log(`   💾 [Stream Route] Saving batch of ${batchToSave.length} contacts...`);
                         console.log(`   💾 [Stream Route] Sample contact being saved:`, JSON.stringify(batchToSave[0]?.contactToSave, null, 2));
 
@@ -1296,8 +1327,8 @@ export async function GET(request: NextRequest) {
               } // End for loop
 
               // Save any remaining pending contacts
-              if (pendingContacts.length > 0) {
-                const remainingBatch = pendingContacts.splice(0);
+              if (globalPendingContacts.length > 0) {
+                const remainingBatch = globalPendingContacts.splice(0);
                 console.log(`   💾 [Stream Route] Saving final batch of ${remainingBatch.length} contacts for ${page.name}...`);
                 try {
                   const { error: finalUpsertError } = await supabaseServer
