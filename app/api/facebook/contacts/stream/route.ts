@@ -1022,7 +1022,7 @@ export async function GET(request: NextRequest) {
 
               // Process conversations for progress tracking
               const BATCH_SIZE = 50;
-              const BATCH_SAVE_SIZE = 25; // Save every 25 contacts - more frequent saves to avoid losing data on timeout
+              const BATCH_SAVE_SIZE = 10; // Save every 10 contacts - very frequent saves for debugging
               const PROGRESS_UPDATE_INTERVAL = 10; // Update every 10 conversations for real-time feel
               let processedCount = 0;
               const processingStartTime = Date.now();
@@ -1191,11 +1191,12 @@ export async function GET(request: NextRequest) {
                         date: contactData.date || null,
                       };
                       globalPendingContacts.push({ contactData, contactToSave, contactKey });
+                      console.log(`   📥 [Stream Route] Added contact to pending buffer. Buffer size: ${globalPendingContacts.length}/${BATCH_SAVE_SIZE}`);
 
-                      // Save in batches of 100 contacts - WAIT for confirmation before proceeding
+                      // Save in batches of 10 contacts - WAIT for confirmation before proceeding
                       if (globalPendingContacts.length >= BATCH_SAVE_SIZE) {
                         const batchToSave = globalPendingContacts.splice(0, BATCH_SAVE_SIZE);
-                        console.log(`   💾 [Stream Route] Saving batch of ${batchToSave.length} contacts...`);
+                        console.log(`   💾 [Stream Route] ====== SAVING BATCH OF ${batchToSave.length} CONTACTS ======`);
                         console.log(`   💾 [Stream Route] Sample contact being saved:`, JSON.stringify(batchToSave[0]?.contactToSave, null, 2));
 
                         try {
