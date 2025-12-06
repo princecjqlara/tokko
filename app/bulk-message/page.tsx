@@ -185,7 +185,7 @@ export default function BulkMessagePage() {
 
     // Poll job status when a job is active
     useEffect(() => {
-        if (!sendJobProgress || sendJobProgress.status === "completed" || sendJobProgress.status === "failed") {
+        if (!sendJobProgress || sendJobProgress.status === "completed" || sendJobProgress.status === "failed" || sendJobProgress.status === "cancelled") {
             return;
         }
 
@@ -207,8 +207,8 @@ export default function BulkMessagePage() {
                         };
                         setSendJobProgress(updated);
 
-                        // Stop polling if job is complete
-                        if (data.job.status === "completed" || data.job.status === "failed") {
+                        // Stop polling if job is complete or cancelled
+                        if (data.job.status === "completed" || data.job.status === "failed" || data.job.status === "cancelled") {
                             clearInterval(pollInterval);
                         }
                     }
@@ -2379,10 +2379,12 @@ export default function BulkMessagePage() {
                         <div className="flex items-center justify-between mb-4">
                             <div className="flex items-center gap-3">
                                 <div className="text-sm font-semibold text-white">
-                                    {sendJobProgress.status === "completed" ? "✅ Sending messages..." :
-                                        sendJobProgress.status === "failed" ? "❌ Sending failed" :
-                                            sendJobProgress.status === "running" ? "📤 Sending messages..." :
-                                                "⏳ Queued for sending"}
+                                    {sendJobProgress.status === "completed" ? "✅ Sending complete" :
+                                        sendJobProgress.status === "cancelled" ? "🚫 Sending cancelled" :
+                                            sendJobProgress.status === "failed" ? "❌ Sending failed" :
+                                                sendJobProgress.status === "running" ? "📤 Sending messages..." :
+                                                    sendJobProgress.status === "processing" ? "📤 Sending messages..." :
+                                                        "⏳ Queued for sending"}
                                 </div>
                             </div>
                             <button
@@ -2435,7 +2437,7 @@ export default function BulkMessagePage() {
                         </div>
 
                         {/* Status message and cancel button */}
-                        {sendJobProgress.status === "running" && (
+                        {(sendJobProgress.status === "running" || sendJobProgress.status === "processing" || sendJobProgress.status === "pending") && (
                             <div className="flex items-center justify-between pt-3 border-t border-zinc-700/50">
                                 <div className="text-xs text-zinc-400 italic">
                                     Processing messages in the background. This page will update automatically.
