@@ -248,11 +248,23 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
 }
 
 async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | null) {
+  // Check if job is already running or completed (prevent duplicate processing)
+  if (sendJob.status === "running") {
+    console.log(`[Process Send Job] Job ${sendJob.id} is already running, skipping`);
+    return;
+  }
+  
+  if (sendJob.status === "completed" || sendJob.status === "failed") {
+    console.log(`[Process Send Job] Job ${sendJob.id} is already ${sendJob.status}, skipping`);
+    return;
+  }
+
   // Move to running state early to avoid duplicate work
   await supabaseServer
     .from("send_jobs")
     .update({ status: "running", updated_at: new Date().toISOString() })
-    .eq("id", sendJob.id);
+    .eq("id", sendJob.id)
+    .eq("status", "pending"); // Only update if still pending (atomic check)
 
   try {
     const contactIds = coerceContactIds(sendJob.contact_ids);
@@ -271,9 +283,25 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       return;
     }
 
+    // Remove duplicates by contact_id to prevent sending twice to same contact
+    const uniqueContacts = new Map<string, ContactRecord>();
+    for (const contact of contacts) {
+      const key = contact.contact_id;
+      if (!uniqueContacts.has(key)) {
+        uniqueContacts.set(key, contact);
+      } else {
+        console.log(`[Process Send Job] Skipping duplicate contact: ${contact.contact_name} (${contact.contact_id})`);
+      }
+    }
+    const deduplicatedContacts = Array.from(uniqueContacts.values());
+    
+    if (deduplicatedContacts.length !== contacts.length) {
+      console.log(`[Process Send Job] Removed ${contacts.length - deduplicatedContacts.length} duplicate contacts`);
+    }
+
     // Group by page
     const contactsByPage = new Map<string, ContactRecord[]>();
-    for (const contact of contacts) {
+    for (const contact of deduplicatedContacts) {
       if (!contactsByPage.has(contact.page_id)) {
         contactsByPage.set(contact.page_id, []);
       }
@@ -283,8 +311,27 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     let messageSuccess = 0;
     let messageFailed = 0;
     const messageErrors: any[] = [];
+    const startTime = Date.now();
+    const VERCEL_TIMEOUT = 280000; // 280 seconds buffer
 
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
+      // Check timeout before processing each page
+      const elapsed = Date.now() - startTime;
+      if (elapsed > VERCEL_TIMEOUT) {
+        console.warn(`[Process Send Job] Approaching timeout (${Math.round(elapsed/1000)}s), stopping at page ${pageId}`);
+        // Update job with partial progress
+        await supabaseServer
+          .from("send_jobs")
+          .update({
+            sent_count: messageSuccess,
+            failed_count: messageFailed,
+            errors: [...messageErrors, { error: `Timeout: Processed ${messageSuccess + messageFailed} of ${deduplicatedContacts.length} contacts` }],
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", sendJob.id);
+        break;
+      }
+      
       const result = await sendMessagesForPage(
         pageId,
         pageContacts,
@@ -297,7 +344,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       messageFailed += result.failed;
       messageErrors.push(...result.errors);
 
-      // Update progress periodically
+      // Update progress periodically after each page
       await supabaseServer
         .from("send_jobs")
         .update({
@@ -310,7 +357,20 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     }
 
     // Final status update
-    const finalStatus = messageSuccess > 0 ? "completed" : "failed";
+    // Check if we processed all contacts
+    const totalProcessed = messageSuccess + messageFailed;
+    const totalExpected = deduplicatedContacts.length;
+    
+    let finalStatus = "completed";
+    if (totalProcessed < totalExpected) {
+      // Not all contacts were processed (likely timeout)
+      finalStatus = "failed";
+      messageErrors.push({ 
+        error: `Incomplete: Only processed ${totalProcessed} of ${totalExpected} contacts. Job may have timed out.` 
+      });
+    } else if (messageSuccess === 0 && messageFailed > 0) {
+      finalStatus = "failed";
+    }
 
     await supabaseServer
       .from("send_jobs")
@@ -323,7 +383,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       })
       .eq("id", sendJob.id);
 
-    console.log(`✅ Processed send job ${sendJob.id}: ${messageSuccess} sent, ${messageFailed} failed`);
+    console.log(`✅ Processed send job ${sendJob.id}: ${messageSuccess} sent, ${messageFailed} failed (${totalProcessed}/${totalExpected} total)`);
   } catch (error: any) {
     console.error(`❌ Error processing send job ${sendJob.id}:`, error);
     await supabaseServer

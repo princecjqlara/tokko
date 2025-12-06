@@ -150,6 +150,38 @@ export default function BulkMessagePage() {
         completedAt?: string;
     } | null>(null);
     
+    // Restore job progress from localStorage on mount
+    useEffect(() => {
+        if (isClient && session?.user?.id) {
+            const stored = localStorage.getItem(`sendJobProgress_${session.user.id}`);
+            if (stored) {
+                try {
+                    const parsed = JSON.parse(stored);
+                    // Only restore if job is still active (not completed/failed)
+                    if (parsed && parsed.jobId && parsed.status && 
+                        parsed.status !== "completed" && parsed.status !== "failed") {
+                        setSendJobProgress(parsed);
+                    } else {
+                        // Clean up completed jobs
+                        localStorage.removeItem(`sendJobProgress_${session.user.id}`);
+                    }
+                } catch (e) {
+                    console.error("Error restoring job progress:", e);
+                }
+            }
+        }
+    }, [isClient, session?.user?.id]);
+    
+    // Save job progress to localStorage whenever it changes
+    useEffect(() => {
+        if (isClient && sendJobProgress && session?.user?.id) {
+            localStorage.setItem(`sendJobProgress_${session.user.id}`, JSON.stringify(sendJobProgress));
+        } else if (isClient && !sendJobProgress && session?.user?.id) {
+            // Clear when job is dismissed
+            localStorage.removeItem(`sendJobProgress_${session.user.id}`);
+        }
+    }, [sendJobProgress, isClient, session?.user?.id]);
+    
     // Poll job status when a job is active
     useEffect(() => {
         if (!sendJobProgress || sendJobProgress.status === "completed" || sendJobProgress.status === "failed") {
@@ -162,7 +194,7 @@ export default function BulkMessagePage() {
                 if (response.ok) {
                     const data = await response.json();
                     if (data.success && data.job) {
-                        setSendJobProgress({
+                        const updated = {
                             jobId: data.job.id,
                             status: data.job.status,
                             sent: data.job.sent_count || 0,
@@ -171,7 +203,8 @@ export default function BulkMessagePage() {
                             errors: data.job.errors || [],
                             startedAt: data.job.started_at,
                             completedAt: data.job.completed_at
-                        });
+                        };
+                        setSendJobProgress(updated);
                         
                         // Stop polling if job is complete
                         if (data.job.status === "completed" || data.job.status === "failed") {
@@ -2178,7 +2211,13 @@ export default function BulkMessagePage() {
                                  "⏳ Queued for sending"}
                             </div>
                             <button
-                                onClick={() => setSendJobProgress(null)}
+                                onClick={() => {
+                                    setSendJobProgress(null);
+                                    // Also clear from localStorage
+                                    if (session?.user?.id) {
+                                        localStorage.removeItem(`sendJobProgress_${session.user.id}`);
+                                    }
+                                }}
                                 className="text-green-300 hover:text-green-100 transition"
                             >
                                 <XIcon size={16} />
