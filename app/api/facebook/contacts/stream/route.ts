@@ -1165,6 +1165,8 @@ export async function GET(request: NextRequest) {
                       if (pendingContacts.length >= BATCH_SAVE_SIZE) {
                         const batchToSave = pendingContacts.splice(0, BATCH_SAVE_SIZE);
                         console.log(`   💾 [Stream Route] Saving batch of ${batchToSave.length} contacts...`);
+                        console.log(`   💾 [Stream Route] Sample contact being saved:`, JSON.stringify(batchToSave[0]?.contactToSave, null, 2));
+
                         try {
                           const { data: savedData, error: upsertError } = await supabaseServer
                             .from("contacts")
@@ -1174,12 +1176,31 @@ export async function GET(request: NextRequest) {
                             .select('contact_id'); // Select to confirm save worked
 
                           if (upsertError) {
-                            console.error(`❌ [Stream Route] Batch save error (${batchToSave.length} contacts):`, upsertError.message);
-                            // Don't count failed saves
+                            console.error(`❌ [Stream Route] DATABASE ERROR:`, {
+                              code: upsertError.code,
+                              message: upsertError.message,
+                              details: upsertError.details,
+                              hint: upsertError.hint
+                            });
+                            // Send error to client
+                            send({
+                              type: "status",
+                              message: `⚠️ DB Error: ${upsertError.code} - ${upsertError.message}. Check RLS or service key!`,
+                              totalContacts: lastSentContactCount
+                            });
                           } else {
                             // CONFIRMED: Database saved the records
-                            const confirmedCount = savedData?.length || batchToSave.length;
+                            const confirmedCount = savedData?.length || 0;
                             console.log(`   ✅ [Stream Route] CONFIRMED: ${confirmedCount} contacts saved to database`);
+
+                            if (confirmedCount === 0) {
+                              console.warn(`   ⚠️ [Stream Route] WARNING: savedData.length is 0 - data may not have been saved!`);
+                              send({
+                                type: "status",
+                                message: `⚠️ Warning: Database returned 0 saved records. Check RLS policies!`,
+                                totalContacts: lastSentContactCount
+                              });
+                            }
 
                             // Mark as saved successfully
                             for (const item of batchToSave) {
@@ -1191,7 +1212,12 @@ export async function GET(request: NextRequest) {
                             }
                           }
                         } catch (saveError: any) {
-                          console.error(`❌ [Stream Route] Batch save exception:`, saveError.message);
+                          console.error(`❌ [Stream Route] EXCEPTION:`, saveError);
+                          send({
+                            type: "status",
+                            message: `⚠️ Exception: ${saveError.message}`,
+                            totalContacts: lastSentContactCount
+                          });
                         }
 
                         // Send progress update after each batch save
