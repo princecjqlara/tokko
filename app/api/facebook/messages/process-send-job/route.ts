@@ -329,11 +329,12 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     console.log(`[Process Send Job] Resuming failed job ${sendJob.id} (${totalProcessed}/${totalExpected} processed)`);
   }
 
-  // CRITICAL: Check if job was updated in the last 30 seconds (another process is working on it)
+  // CRITICAL: Check if job was updated in the last 60 seconds (another process is working on it)
+  // This must match or exceed the cron stale detection window (60 seconds)
   const lastUpdated = new Date(sendJob.updated_at || sendJob.started_at || new Date().toISOString());
   const secondsSinceLastUpdate = (Date.now() - lastUpdated.getTime()) / 1000;
 
-  if (sendJob.status === "running" && secondsSinceLastUpdate < 30) {
+  if (sendJob.status === "running" && secondsSinceLastUpdate < 60) {
     console.log(`[Process Send Job] Job ${sendJob.id} was updated ${secondsSinceLastUpdate.toFixed(1)}s ago, another process is likely working on it. Skipping.`);
     return;
   }
@@ -792,15 +793,16 @@ export async function GET(request: NextRequest) {
     const MAX_JOBS_PER_RUN = 5;
 
     // Find pending AND running jobs (to resume incomplete jobs)
-    // BUT: Skip jobs that were updated very recently (within last 10 seconds) to prevent concurrent processing
+    // BUT: Skip jobs that were updated recently (within last 60 seconds) to prevent concurrent processing
+    // This gives the direct trigger enough time between database updates
     // For cron: process all pending/running jobs
     // For manual: only process user's jobs
-    const tenSecondsAgo = new Date(Date.now() - 10000).toISOString();
+    const sixtySecondsAgo = new Date(Date.now() - 60000).toISOString();
     let query = supabaseServer
       .from("send_jobs")
       .select("*")
-      .in("status", ["pending", "running"]) // Also process running jobs to resume them
-      .or(`updated_at.lt.${tenSecondsAgo},updated_at.is.null,status.eq.pending`) // Only process jobs not updated in last 10 seconds (or pending)
+      .in("status", ["pending", "running"]) // Also process running jobs to resume them (NOT 'processing' - those are being handled directly)
+      .or(`updated_at.lt.${sixtySecondsAgo},updated_at.is.null`) // Only process jobs not updated in last 60 seconds
       .order("started_at", { ascending: true })
       .limit(MAX_JOBS_PER_RUN);
 
