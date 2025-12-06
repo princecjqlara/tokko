@@ -18,6 +18,8 @@ type SendJobRecord = {
   failed_count: number;
   total_count: number;
   errors: any[];
+  updated_at?: string;
+  started_at?: string;
 };
 
 type ContactRecord = {
@@ -303,7 +305,11 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
 }
 
 async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | null) {
-  // Allow resuming incomplete jobs (status: "running" but not completed)
+  // Generate a unique processing ID for this instance
+  const processingId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+  console.log(`[Process Send Job] Attempting to claim job ${sendJob.id} with processing ID: ${processingId}`);
+
   // Check if job is completed or permanently failed
   if (sendJob.status === "completed") {
     console.log(`[Process Send Job] Job ${sendJob.id} is already completed, skipping`);
@@ -311,40 +317,73 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   }
 
   if (sendJob.status === "failed") {
-    // Check if it's a permanent failure or can be resumed
     const totalProcessed = (sendJob.sent_count || 0) + (sendJob.failed_count || 0);
     const totalExpected = sendJob.total_count || 0;
 
-    // If job failed but processed all contacts, don't resume
     if (totalProcessed >= totalExpected) {
       console.log(`[Process Send Job] Job ${sendJob.id} failed but processed all contacts, skipping`);
       return;
     }
 
-    // Otherwise, allow resuming failed jobs that didn't complete
     console.log(`[Process Send Job] Resuming failed job ${sendJob.id} (${totalProcessed}/${totalExpected} processed)`);
   }
 
-  // Move to running state (allow resuming from "running" or "failed" status)
-  // Use atomic update to prevent concurrent processing
-  // Only update if status is still pending/running/failed (atomic check)
+  // CRITICAL: Check if job was updated in the last 30 seconds (another process is working on it)
+  const lastUpdated = new Date(sendJob.updated_at || sendJob.started_at || new Date().toISOString());
+  const secondsSinceLastUpdate = (Date.now() - lastUpdated.getTime()) / 1000;
+
+  if (sendJob.status === "running" && secondsSinceLastUpdate < 30) {
+    console.log(`[Process Send Job] Job ${sendJob.id} was updated ${secondsSinceLastUpdate.toFixed(1)}s ago, another process is likely working on it. Skipping.`);
+    return;
+  }
+
+  // Atomically claim the job by updating status and setting a processing marker
+  // Only update if status hasn't changed (prevents race conditions)
   const { data: updateResult, error: updateError } = await supabaseServer
     .from("send_jobs")
     .update({
       status: "running",
-      updated_at: new Date().toISOString()
+      updated_at: new Date().toISOString(),
+      // Store processing ID in errors array as metadata to track which instance is processing
+      errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
     })
     .eq("id", sendJob.id)
-    .in("status", ["pending", "running", "failed"]) // Only update if in these states
+    .in("status", ["pending", "running", "failed"])
     .select()
     .single();
 
   if (updateError || !updateResult) {
-    console.log(`[Process Send Job] Job ${sendJob.id} may have been picked up by another process or already completed, skipping`);
+    console.log(`[Process Send Job] Job ${sendJob.id} could not be claimed (may be picked up by another process), skipping`);
     return;
   }
 
-  // Double-check: if another process started it very recently (within last 5 seconds), skip
+  // Wait a moment and verify we still own the job
+  await sleep(500);
+
+  const { data: verifyJob } = await supabaseServer
+    .from("send_jobs")
+    .select("*")
+    .eq("id", sendJob.id)
+    .single();
+
+  if (verifyJob) {
+    // Check if our processing ID is still in the errors array
+    const processingMarker = (verifyJob.errors || []).find((e: any) => e._processing?.id === processingId);
+    if (!processingMarker) {
+      console.log(`[Process Send Job] Job ${sendJob.id} was claimed by another process, our processing ID ${processingId} not found. Skipping.`);
+      return;
+    }
+
+    // Check if job status changed (cancelled, completed, etc.)
+    if (verifyJob.status === "completed" || verifyJob.status === "cancelled") {
+      console.log(`[Process Send Job] Job ${sendJob.id} status changed to ${verifyJob.status}, skipping.`);
+      return;
+    }
+  }
+
+  console.log(`[Process Send Job] ✅ Successfully claimed job ${sendJob.id} with processing ID: ${processingId}`);
+
+  // Double-check timing to prevent race conditions
   const jobUpdatedAt = new Date(updateResult.updated_at || updateResult.started_at);
   const now = new Date();
   const secondsSinceUpdate = (now.getTime() - jobUpdatedAt.getTime()) / 1000;
