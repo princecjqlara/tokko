@@ -1754,7 +1754,9 @@ export default function BulkMessagePage() {
                     data = JSON.parse(text);
                 } catch (parseError: any) {
                     console.error("Failed to parse JSON response:", parseError);
-                    const errorText = await response.text().catch(() => "Unknown error");
+                    // Note: response.text() was already called above, so we can't call it again
+                    // Use the parseError message instead
+                    const errorText = parseError.message || "Unknown error";
                     throw new Error(`Server returned invalid JSON: ${errorText.substring(0, 100)}`);
                 }
             } else {
