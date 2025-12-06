@@ -253,7 +253,6 @@ export default function BulkMessagePage() {
     const isSendingRef = useRef(false); // Track if a send is in progress (prevents race conditions)
     const sendAbortControllerRef = useRef<AbortController | null>(null); // AbortController for canceling sends
     const lastSendRequestIdRef = useRef<string | null>(null); // Track last send request ID to prevent duplicates
-    const lastSendTimestampRef = useRef<number>(0); // Track last send timestamp to prevent rapid duplicates
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -1806,14 +1805,6 @@ export default function BulkMessagePage() {
             return;
         }
 
-        // ULTRA-CRITICAL: Check timestamp to prevent rapid duplicate calls (within 1 second)
-        const now = Date.now();
-        if (now - lastSendTimestampRef.current < 1000) {
-            console.warn("[Frontend] Duplicate call detected within 1 second, ignoring");
-            return;
-        }
-        lastSendTimestampRef.current = now;
-
         // Also check state as backup
         if (activeSends > 0) {
             console.warn("[Frontend] Send already in progress (state check), ignoring duplicate call. Active sends:", activeSends);
@@ -2077,7 +2068,6 @@ export default function BulkMessagePage() {
             isSendingRef.current = false;
             sendAbortControllerRef.current = null;
             lastSendRequestIdRef.current = null;
-            // Note: lastSendTimestampRef is NOT reset - it stays to prevent rapid re-sends
 
             setActiveSends(prev => {
                 const newCount = prev - 1;
@@ -3056,9 +3046,21 @@ export default function BulkMessagePage() {
 
                                 {/* Send Button */}
                                 <button
-                                    onClick={handleSendBroadcast}
-                                    disabled={!message.trim() || selectedContactIds.length === 0 || activeSends > 0 || isUploadingFile}
-                                    className={`group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100 ${(activeSends > 0 || isUploadingFile) ? 'pointer-events-none' : ''}`}
+                                    onClick={(e) => {
+                                        // Prevent default and stop propagation
+                                        e.preventDefault();
+                                        e.stopPropagation();
+
+                                        // Extra safety: check ref immediately before calling
+                                        if (isSendingRef.current) {
+                                            console.warn("[Frontend] Button clicked but send already in progress (ref check)");
+                                            return;
+                                        }
+
+                                        handleSendBroadcast();
+                                    }}
+                                    disabled={!message.trim() || selectedContactIds.length === 0 || activeSends > 0 || isUploadingFile || isSendingRef.current}
+                                    className="group flex items-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 to-purple-600 px-6 py-2.5 text-sm font-semibold text-white transition-all hover:shadow-lg hover:shadow-indigo-500/25 hover:scale-105 active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
                                     title={!message.trim() ? "Enter a message to send" : selectedContactIds.length === 0 ? "Select at least one contact" : isUploadingFile ? "Uploading file..." : "Send message (works even while syncing contacts)"}
                                 >
                                     <span>

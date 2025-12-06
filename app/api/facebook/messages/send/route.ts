@@ -561,14 +561,14 @@ export async function POST(request: NextRequest) {
           const firstName = contact.contact_name?.split(' ')[0] || 'there';
           personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
 
-          // If attachment is provided, send media first, then text
-          // Facebook doesn't allow text and attachment in the same message
+          // If attachment is provided, ONLY send media (no separate text message)
+          // If no attachment, send text only
           if (attachment && attachment.url) {
             try {
               // Determine attachment type (image, video, audio, or file)
               const attachmentType = attachment.type || "file";
 
-              // Send media attachment first
+              // Send ONLY media attachment (no separate text message to avoid duplicates)
               const mediaPayload: any = {
                 recipient: {
                   id: contact.contact_id
@@ -600,60 +600,69 @@ export async function POST(request: NextRequest) {
               const mediaData = await mediaResponse.json();
 
               if (mediaResponse.ok && !mediaData.error) {
+                results.success++;
                 const typeLabel = attachmentType === "image" ? "image" :
                   attachmentType === "video" ? "video" :
                     attachmentType === "audio" ? "audio" : "file";
                 console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
-                // Wait a bit before sending text message
-                await new Promise(resolve => setTimeout(resolve, 500));
               } else {
+                results.failed++;
                 const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
                 console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
-                // Continue to send text message even if media fails
+                results.errors.push({
+                  contact: contact.contact_name,
+                  page: contact.page_name,
+                  error: errorMsg
+                });
               }
             } catch (mediaError: any) {
+              results.failed++;
               console.error(`❌ Error sending media to ${contact.contact_name}:`, mediaError);
-              // Continue to send text message even if media fails
+              results.errors.push({
+                contact: contact.contact_name,
+                page: contact.page_name,
+                error: mediaError.message || "Unknown error"
+              });
             }
-          }
-
-          // Send text message (always send text, even if media was sent)
-          const textPayload: any = {
-            recipient: {
-              id: contact.contact_id
-            },
-            message: {
-              text: personalizedMessage
-            },
-            messaging_type: "MESSAGE_TAG",
-            tag: "ACCOUNT_UPDATE"
-          };
-
-          const sendResponse = await fetch(
-            `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-            {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify(textPayload),
-            }
-          );
-
-          const sendData = await sendResponse.json();
-
-          if (sendResponse.ok && !sendData.error) {
-            results.success++;
-            console.log(`✅ Sent message to ${contact.contact_name} (${contact.contact_id})`);
           } else {
-            results.failed++;
-            const errorMsg = sendData.error?.message || "Unknown error";
-            console.error(`❌ Failed to send text to ${contact.contact_name}:`, errorMsg);
-            results.errors.push({
-              contact: contact.contact_name,
-              page: contact.page_name,
-              error: errorMsg
-            });
+            // No attachment - send text message only
+            const textPayload: any = {
+              recipient: {
+                id: contact.contact_id
+              },
+              message: {
+                text: personalizedMessage
+              },
+              messaging_type: "MESSAGE_TAG",
+              tag: "ACCOUNT_UPDATE"
+            };
+
+            const sendResponse = await fetch(
+              `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+              {
+                method: "POST",
+                headers: {
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify(textPayload),
+              }
+            );
+
+            const sendData = await sendResponse.json();
+
+            if (sendResponse.ok && !sendData.error) {
+              results.success++;
+              console.log(`✅ Sent message to ${contact.contact_name} (${contact.contact_id})`);
+            } else {
+              results.failed++;
+              const errorMsg = sendData.error?.message || "Unknown error";
+              console.error(`❌ Failed to send text to ${contact.contact_name}:`, errorMsg);
+              results.errors.push({
+                contact: contact.contact_name,
+                page: contact.page_name,
+                error: errorMsg
+              });
+            }
           }
 
           // Rate limiting: Add delay between messages to avoid hitting rate limits
