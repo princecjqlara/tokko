@@ -561,99 +561,101 @@ export async function POST(request: NextRequest) {
           const firstName = contact.contact_name?.split(' ')[0] || 'there';
           personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
 
-          // IMPORTANT: Send ONLY ONE message per contact
-          // If attachment exists, send ONLY media (no separate text)
-          // If no attachment, send ONLY text
+          // IMPORTANT: Facebook Messenger API Limitation
+          // Media and text MUST be sent as 2 separate messages
+          // This is NOT a bug - it's how Facebook's API works
+          // The user will receive 2 messages when media is attached
+
+          // Send media first if attachment exists
           if (attachment && attachment.url) {
-            // Determine attachment type (image, video, audio, or file)
-            const attachmentType = attachment.type || "file";
+            try {
+              const attachmentType = attachment.type || "file";
 
-            // Send ONLY media attachment (no separate text message)
-            const mediaPayload: any = {
-              recipient: {
-                id: contact.contact_id
-              },
-              message: {
-                attachment: {
-                  type: attachmentType,
-                  payload: {
-                    url: attachment.url,
-                    is_reusable: true
+              const mediaPayload: any = {
+                recipient: {
+                  id: contact.contact_id
+                },
+                message: {
+                  attachment: {
+                    type: attachmentType,
+                    payload: {
+                      url: attachment.url,
+                      is_reusable: true
+                    }
                   }
+                },
+                messaging_type: "MESSAGE_TAG",
+                tag: "ACCOUNT_UPDATE"
+              };
+
+              const mediaResponse = await fetch(
+                `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+                {
+                  method: "POST",
+                  headers: {
+                    "Content-Type": "application/json",
+                  },
+                  body: JSON.stringify(mediaPayload),
                 }
-              },
-              messaging_type: "MESSAGE_TAG",
-              tag: "ACCOUNT_UPDATE"
-            };
+              );
 
-            const mediaResponse = await fetch(
-              `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify(mediaPayload),
+              const mediaData = await mediaResponse.json();
+
+              if (mediaResponse.ok && !mediaData.error) {
+                const typeLabel = attachmentType === "image" ? "image" :
+                  attachmentType === "video" ? "video" :
+                    attachmentType === "audio" ? "audio" : "file";
+                console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
+                // Wait before sending text to ensure proper ordering
+                await new Promise(resolve => setTimeout(resolve, 500));
+              } else {
+                const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
+                console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
+                // Continue to send text even if media fails
               }
-            );
-
-            const mediaData = await mediaResponse.json();
-
-            if (mediaResponse.ok && !mediaData.error) {
-              results.success++;
-              const typeLabel = attachmentType === "image" ? "image" :
-                attachmentType === "video" ? "video" :
-                  attachmentType === "audio" ? "audio" : "file";
-              console.log(`✅ Sent ${typeLabel} to ${contact.contact_name} (${contact.contact_id})`);
-            } else {
-              results.failed++;
-              const errorMsg = mediaData.error?.message || `Failed to send ${attachmentType}`;
-              console.error(`❌ Failed to send ${attachmentType} to ${contact.contact_name}:`, errorMsg);
-              results.errors.push({
-                contact: contact.contact_name,
-                page: contact.page_name,
-                error: errorMsg
-              });
+            } catch (mediaError: any) {
+              console.error(`❌ Error sending media to ${contact.contact_name}:`, mediaError);
+              // Continue to send text even if media fails
             }
+          }
+
+          // Send text message (always send, even if media was sent)
+          const textPayload: any = {
+            recipient: {
+              id: contact.contact_id
+            },
+            message: {
+              text: personalizedMessage
+            },
+            messaging_type: "MESSAGE_TAG",
+            tag: "ACCOUNT_UPDATE"
+          };
+
+          const sendResponse = await fetch(
+            `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+            {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify(textPayload),
+            }
+          );
+
+          const sendData = await sendResponse.json();
+
+          if (sendResponse.ok && !sendData.error) {
+            results.success++;
+            console.log(`✅ Sent text message to ${contact.contact_name} (${contact.contact_id})`);
           } else {
-            // No attachment - send ONLY text message
-            const textPayload: any = {
-              recipient: {
-                id: contact.contact_id
-              },
-              message: {
-                text: personalizedMessage
-              },
-              messaging_type: "MESSAGE_TAG",
-              tag: "ACCOUNT_UPDATE"
-            };
-
-            const sendResponse = await fetch(
-              `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-              {
-                method: "POST",
-                headers: {
-                  "Content-Type": "application/json",
-                },
-                body: JSON.stringify(textPayload),
-              }
-            );
-
-            const sendData = await sendResponse.json();
-
-            if (sendResponse.ok && !sendData.error) {
-              results.success++;
-              console.log(`✅ Sent text message to ${contact.contact_name} (${contact.contact_id})`);
-            } else {
-              results.failed++;
-              const errorMsg = sendData.error?.message || "Unknown error";
-              console.error(`❌ Failed to send text to ${contact.contact_name}:`, errorMsg);
-              results.errors.push({
-                contact: contact.contact_name,
-                page: contact.page_name,
-                error: errorMsg
-              });
-            }
+            results.failed++;
+            const errorMsg = sendData.error?.message || "Unknown error";
+            console.error(`❌ Failed to send text to ${contact.contact_name}:`, errorMsg);
+            results.errors.push({
+              contact: contact.contact_name,
+              page: contact.page_name,
+              error: errorMsg
+            });
           }
 
           // Rate limiting: Add delay between messages to avoid hitting rate limits
