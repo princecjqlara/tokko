@@ -3,6 +3,14 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { supabaseServer } from "@/lib/supabase-server";
 
+// Vercel Pro allows up to 300 seconds (5 minutes), Hobby plan allows 10 seconds
+// For large batches (>100 contacts), we use background jobs to avoid timeout
+export const maxDuration = 300; // 5 minutes max duration (requires Vercel Pro plan)
+export const dynamic = "force-dynamic";
+
+// Threshold for using background jobs (to avoid timeout)
+const BACKGROUND_JOB_THRESHOLD = 100;
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -138,6 +146,62 @@ export async function POST(request: NextRequest) {
       );
     }
 
+    // For large batches, use background job to avoid timeout
+    // If not scheduled and batch is large, create a background job
+    if (!scheduleDate && contacts.length > BACKGROUND_JOB_THRESHOLD) {
+      console.log(`[Send Message API] Large batch detected (${contacts.length} contacts), creating background job`);
+      
+      const { data: sendJob, error: jobError } = await supabaseServer
+        .from("send_jobs")
+        .insert({
+          user_id: userId,
+          contact_ids: contactIds,
+          message: message.trim(),
+          attachment: attachment || null,
+          status: "pending",
+          total_count: contacts.length
+        })
+        .select()
+        .single();
+
+      if (jobError) {
+        console.error("Error creating send job:", jobError);
+        // Fall through to try sending directly (may timeout but better than failing completely)
+        console.log("[Send Message API] Failed to create job, attempting direct send (may timeout)");
+      } else {
+        // Trigger background processing asynchronously (don't wait for it)
+        // Pass the access token so the job processor can fetch pages if needed
+        fetch(`${process.env.NEXTAUTH_URL || 'http://localhost:3000'}/api/facebook/messages/process-send-job`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": `Bearer ${(session as any).accessToken}`,
+          },
+          body: JSON.stringify({ 
+            jobId: sendJob.id,
+            accessToken: (session as any).accessToken 
+          }),
+        }).catch(err => {
+          console.error("[Send Message API] Failed to trigger background job:", err);
+          // Job will be picked up by cron or manual trigger
+        });
+
+        return NextResponse.json({
+          success: true,
+          results: {
+            total: contacts.length,
+            sent: 0,
+            failed: 0,
+            errors: [],
+            scheduled: false,
+            backgroundJob: true,
+            jobId: sendJob.id,
+            message: `Large batch detected. Processing ${contacts.length} messages in the background. Check job status for progress.`
+          }
+        });
+      }
+    }
+
     // If scheduleDate is provided, store the message for later instead of sending immediately
     if (scheduleDate) {
       const scheduledDate = new Date(scheduleDate);
@@ -214,8 +278,29 @@ export async function POST(request: NextRequest) {
       scheduled: false
     };
 
+    // Track start time for timeout protection
+    const startTime = Date.now();
+    const VERCEL_TIMEOUT = 280000; // 280 seconds (leave 20s buffer before Vercel's 300s limit)
+
     // Send messages to each page's contacts
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
+      // Check if we're approaching timeout
+      const elapsed = Date.now() - startTime;
+      if (elapsed > VERCEL_TIMEOUT) {
+        console.warn(`[Send Message API] Approaching timeout (${Math.round(elapsed/1000)}s elapsed), returning partial results`);
+        return NextResponse.json({
+          success: true,
+          results: {
+            total: contactIds.length,
+            sent: results.success,
+            failed: results.failed,
+            errors: results.errors,
+            scheduled: false,
+            partial: true,
+            message: `Timeout approaching. Sent ${results.success} messages. ${contactIds.length - results.success - results.failed} remaining. Please retry with smaller batch or use scheduling.`
+          }
+        });
+      }
       // Get page access token from facebook_pages table
       const firstContact = pageContacts[0];
       

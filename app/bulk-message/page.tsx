@@ -1799,6 +1799,12 @@ export default function BulkMessagePage() {
                         scheduledFor: data.results.scheduledFor,
                         total: data.results.total || selectedContactIds.length || 0
                     });
+                } else if (data.results?.backgroundJob) {
+                    // Large batch is being processed in background
+                    alert(`Large batch detected (${data.results.total} contacts). Processing in background. Job ID: ${data.results.jobId}\n\n${data.results.message || 'Check back later for results.'}`);
+                } else if (data.results?.partial) {
+                    // Partial results due to timeout
+                    alert(`${data.results.message}\n\nSent: ${data.results.sent}\nFailed: ${data.results.failed}\nRemaining: ${data.results.total - data.results.sent - data.results.failed}`);
                 } else {
                     alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
                 }
