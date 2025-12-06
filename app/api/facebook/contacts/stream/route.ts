@@ -983,7 +983,7 @@ export async function GET(request: NextRequest) {
               let pageContacts = 0;
               const seenContactIds = new Set<string>(); // Track contacts to avoid duplicates within this page
               const processedContactKeys = new Set<string>(); // Track contacts already processed in this page
-              const pendingContacts: any[] = []; // Small batch buffer - save every 20 contacts
+              const pendingContacts: any[] = []; // Batch buffer - save every 100 contacts
 
               console.log(`   🔄 [Stream Route] Starting conversation processing loop for ${page.name} (${allConversations.length} conversations)`);
 
@@ -991,7 +991,7 @@ export async function GET(request: NextRequest) {
 
               // Process conversations for progress tracking
               const BATCH_SIZE = 50;
-              const SMALL_BATCH_SAVE_SIZE = 20; // Save every 20 contacts - balance between reliability and API efficiency
+              const BATCH_SAVE_SIZE = 100; // Save every 100 contacts - confirmed working before proceeding
               const PROGRESS_UPDATE_INTERVAL = 10; // Update every 10 conversations for real-time feel
               let processedCount = 0;
               const processingStartTime = Date.now();
@@ -1161,19 +1161,26 @@ export async function GET(request: NextRequest) {
                       };
                       pendingContacts.push({ contactData, contactToSave, contactKey });
 
-                      // Save in small batches of 20 contacts - balance between reliability and API efficiency
-                      if (pendingContacts.length >= SMALL_BATCH_SAVE_SIZE) {
-                        const batchToSave = pendingContacts.splice(0, SMALL_BATCH_SAVE_SIZE);
+                      // Save in batches of 100 contacts - WAIT for confirmation before proceeding
+                      if (pendingContacts.length >= BATCH_SAVE_SIZE) {
+                        const batchToSave = pendingContacts.splice(0, BATCH_SAVE_SIZE);
+                        console.log(`   💾 [Stream Route] Saving batch of ${batchToSave.length} contacts...`);
                         try {
-                          const { error: upsertError } = await supabaseServer
+                          const { data: savedData, error: upsertError } = await supabaseServer
                             .from("contacts")
                             .upsert(batchToSave.map(c => c.contactToSave), {
                               onConflict: "contact_id,page_id,user_id"
-                            });
+                            })
+                            .select('contact_id'); // Select to confirm save worked
 
                           if (upsertError) {
                             console.error(`❌ [Stream Route] Batch save error (${batchToSave.length} contacts):`, upsertError.message);
+                            // Don't count failed saves
                           } else {
+                            // CONFIRMED: Database saved the records
+                            const confirmedCount = savedData?.length || batchToSave.length;
+                            console.log(`   ✅ [Stream Route] CONFIRMED: ${confirmedCount} contacts saved to database`);
+
                             // Mark as saved successfully
                             for (const item of batchToSave) {
                               if (!globalSeenContactKeys.has(item.contactKey)) {
@@ -1182,7 +1189,6 @@ export async function GET(request: NextRequest) {
                                 pageContacts++;
                               }
                             }
-                            console.log(`   💾 [Stream Route] Saved batch of ${batchToSave.length} contacts (${allContacts.length} total)`);
                           }
                         } catch (saveError: any) {
                           console.error(`❌ [Stream Route] Batch save exception:`, saveError.message);
