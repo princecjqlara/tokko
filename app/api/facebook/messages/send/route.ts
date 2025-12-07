@@ -208,13 +208,29 @@ export async function POST(request: NextRequest) {
       // Merge both results and remove duplicates
       const allContacts = [...contactsByDbId, ...contactsByContactId];
       const uniqueContacts = new Map<string, any>();
+      const seenContactIds = new Set<string>();
 
       for (const contact of allContacts) {
-        // CRITICAL: Use contact_id as the unique key (contact_id is globally unique)
-        // This ensures we only process each contact once, even if they appear with different database IDs
-        const key = contact.contact_id;
-        if (!uniqueContacts.has(key)) {
-          uniqueContacts.set(key, contact);
+        // CRITICAL: Use contact_id as the unique key (contact_id is globally unique per Facebook)
+        // contact_id should always be present (NOT NULL in schema), but add safety check
+        if (!contact.contact_id) {
+          console.warn(`[Send Message API] ⚠️ Contact missing contact_id (unexpected!):`, {
+            id: contact.id,
+            name: contact.contact_name,
+            page_id: contact.page_id
+          });
+          // Still include it using database id as fallback, but this shouldn't happen
+          const fallbackKey = `db_${contact.id}`;
+          if (!uniqueContacts.has(fallbackKey)) {
+            uniqueContacts.set(fallbackKey, contact);
+          }
+          continue;
+        }
+
+        const contactId = String(contact.contact_id); // Ensure it's a string for Set comparison
+        if (!seenContactIds.has(contactId)) {
+          seenContactIds.add(contactId);
+          uniqueContacts.set(contactId, contact);
         } else {
           console.log(`[Send Message API] Skipping duplicate contact: ${contact.contact_name} (contact_id: ${contact.contact_id})`);
         }
@@ -222,6 +238,23 @@ export async function POST(request: NextRequest) {
 
       contacts = Array.from(uniqueContacts.values());
       console.log(`[Send Message API] Total unique contacts after merge: ${contacts.length} (removed ${allContacts.length - contacts.length} duplicates)`);
+      
+      // Log contact details for debugging
+      if (contacts.length === 0) {
+        console.error(`[Send Message API] ⚠️ NO CONTACTS FOUND after deduplication!`, {
+          contactIdsRequested: contactIds.length,
+          contactsByDbId: contactsByDbId.length,
+          contactsByContactId: contactsByContactId.length,
+          allContactsBeforeDedup: allContacts.length
+        });
+      } else {
+        console.log(`[Send Message API] Sample contacts:`, contacts.slice(0, 3).map(c => ({
+          id: c.id,
+          contact_id: c.contact_id,
+          name: c.contact_name,
+          page_id: c.page_id
+        })));
+      }
     } catch (dbError: any) {
       console.error("[Send Message API] Database error fetching contacts:", dbError);
       contactsError = dbError;
@@ -443,6 +476,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Track which contacts we've already sent to (prevents duplicates within this request)
+    // Use string keys for consistency (contact_id can be string or number)
     const sentTextToContacts = new Set<string>();
     const sentMediaToContacts = new Set<string>();
 
@@ -457,11 +491,26 @@ export async function POST(request: NextRequest) {
     const startTime = Date.now();
     const VERCEL_TIMEOUT = 280000; // 280 seconds
 
-    console.log(`[Send Message API] Starting send operation for ${contacts.length} contacts`);
+    console.log(`[Send Message API] Starting send operation for ${contacts.length} contacts across ${contactsByPage.size} pages`);
+
+    if (contacts.length === 0) {
+      console.error(`[Send Message API] ⚠️ CRITICAL: No contacts to send to!`);
+      return NextResponse.json({
+        success: false,
+        error: "No contacts found to send messages to",
+        results: {
+          total: 0,
+          sent: 0,
+          failed: 0,
+          errors: [{ error: "No contacts found after processing" }]
+        }
+      }, { status: 400 });
+    }
 
     // STEP 1: Send TEXT messages to ALL contacts first
     console.log(`[Send Message API] STEP 1: Sending TEXT to all contacts...`);
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
+      console.log(`[Send Message API] Processing page ${pageId} with ${pageContacts.length} contacts`);
       // Check timeout
       if (Date.now() - startTime > VERCEL_TIMEOUT) {
         console.warn(`[Send Message API] Timeout approaching during TEXT phase`);
@@ -489,14 +538,28 @@ export async function POST(request: NextRequest) {
 
       // Send TEXT to each contact on this page
       for (const contact of pageContacts) {
+        // Skip contacts without contact_id (can't send without it)
+        if (!contact.contact_id) {
+          console.warn(`[Send Message API] ⚠️ Skipping contact without contact_id: ${contact.contact_name} (id: ${contact.id})`);
+          results.failed++;
+          results.errors.push({
+            contact: contact.contact_name,
+            page: contact.page_name,
+            error: "Missing contact_id"
+          });
+          continue;
+        }
+
         // CRITICAL: Skip if already sent text to this contact (check BEFORE processing)
-        if (sentTextToContacts.has(contact.contact_id)) {
+        // Convert to string for consistent Set comparison
+        const contactIdStr = String(contact.contact_id);
+        if (sentTextToContacts.has(contactIdStr)) {
           console.warn(`[Send Message API] ⚠️ DUPLICATE PREVENTION: Skipping duplicate TEXT send to ${contact.contact_name} (contact_id: ${contact.contact_id})`);
           continue;
         }
 
         // Mark as processing IMMEDIATELY to prevent concurrent sends to same contact
-        sentTextToContacts.add(contact.contact_id);
+        sentTextToContacts.add(contactIdStr);
 
         try {
           // Replace {FirstName} placeholder
@@ -529,7 +592,7 @@ export async function POST(request: NextRequest) {
             console.log(`✅ Sent TEXT to ${contact.contact_name} (${contact.contact_id})`);
           } else {
             // Remove from sent set if send failed (allow retry)
-            sentTextToContacts.delete(contact.contact_id);
+            sentTextToContacts.delete(String(contact.contact_id));
             results.failed++;
             const errorMsg = data.error?.message || "Unknown error";
             console.error(`❌ Failed TEXT to ${contact.contact_name} (${contact.contact_id}): ${errorMsg}`);
@@ -544,7 +607,7 @@ export async function POST(request: NextRequest) {
           await new Promise(resolve => setTimeout(resolve, 100));
         } catch (error: any) {
           // Remove from sent set on error (allow retry)
-          sentTextToContacts.delete(contact.contact_id);
+          sentTextToContacts.delete(String(contact.contact_id));
           results.failed++;
           console.error(`❌ Error sending TEXT to ${contact.contact_name} (${contact.contact_id}):`, error);
           results.errors.push({
@@ -585,21 +648,27 @@ export async function POST(request: NextRequest) {
 
         // Send MEDIA to each contact on this page
         for (const contact of pageContacts) {
+          // Skip contacts without contact_id
+          if (!contact.contact_id) {
+            continue; // Already logged error in TEXT phase
+          }
+
           // CRITICAL: Skip if already sent media to this contact (check BEFORE processing)
           // Also skip if we haven't sent text to this contact (text must come first)
-          if (sentMediaToContacts.has(contact.contact_id)) {
+          const contactIdStr = String(contact.contact_id);
+          if (sentMediaToContacts.has(contactIdStr)) {
             console.warn(`[Send Message API] ⚠️ DUPLICATE PREVENTION: Skipping duplicate MEDIA send to ${contact.contact_name} (contact_id: ${contact.contact_id})`);
             continue;
           }
 
           // Skip if text wasn't sent (media should only be sent after successful text)
-          if (!sentTextToContacts.has(contact.contact_id)) {
+          if (!sentTextToContacts.has(contactIdStr)) {
             console.warn(`[Send Message API] ⚠️ Skipping MEDIA for ${contact.contact_name} - text was not sent first`);
             continue;
           }
 
           // Mark as processing IMMEDIATELY to prevent concurrent sends to same contact
-          sentMediaToContacts.add(contact.contact_id);
+          sentMediaToContacts.add(contactIdStr);
 
           try {
             console.log(`[Send Message API] Sending MEDIA to ${contact.contact_name} (${contact.contact_id})...`);
@@ -634,7 +703,7 @@ export async function POST(request: NextRequest) {
               console.log(`✅ Sent MEDIA to ${contact.contact_name} (${contact.contact_id})`);
             } else {
               // Remove from sent set if send failed (allow retry)
-              sentMediaToContacts.delete(contact.contact_id);
+              sentMediaToContacts.delete(String(contact.contact_id));
               const errorMsg = data.error?.message || "Unknown error";
               console.error(`❌ Failed MEDIA to ${contact.contact_name} (${contact.contact_id}): ${errorMsg}`);
               // Don't add to failed count since text was already counted
@@ -644,7 +713,7 @@ export async function POST(request: NextRequest) {
             await new Promise(resolve => setTimeout(resolve, 100));
           } catch (error: any) {
             // Remove from sent set on error (allow retry)
-            sentMediaToContacts.delete(contact.contact_id);
+            sentMediaToContacts.delete(String(contact.contact_id));
             console.error(`❌ Error sending MEDIA to ${contact.contact_name} (${contact.contact_id}):`, error);
           }
         }
