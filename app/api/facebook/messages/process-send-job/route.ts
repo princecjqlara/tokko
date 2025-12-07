@@ -30,8 +30,8 @@ type ContactRecord = {
   page_name: string;
 };
 
-const MESSAGE_SEND_THROTTLE_MS = 100; // rate limit between sends
-const ATTACHMENT_THROTTLE_MS = 500; // give media a moment to settle
+const MESSAGE_SEND_THROTTLE_MS = 50; // rate limit between sends (increased from 100ms for faster processing)
+const ATTACHMENT_THROTTLE_MS = 300; // give media a moment to settle (reduced from 500ms)
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -280,7 +280,7 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
     if (sentContactIds) {
       sentContactIds.add(contact.contact_id);
     }
-    
+
     console.log(`[sendMessagesForPage] Processing contact: ${contact.contact_name} (contact_id: ${contact.contact_id}) - marked as sending`);
 
     const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment);
@@ -357,7 +357,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     console.warn(`[Process Send Job] ⚠️ Job ${sendJob.id} was updated ${secondsSinceLastUpdate.toFixed(1)}s ago, another process is likely working on it. Skipping to prevent duplicate processing.`);
     return;
   }
-  
+
   // Also check "processing" status with same logic
   if (sendJob.status === "processing" && secondsSinceLastUpdate < 90) {
     console.warn(`[Process Send Job] ⚠️ Job ${sendJob.id} is in 'processing' status and was updated ${secondsSinceLastUpdate.toFixed(1)}s ago. Another process is likely working on it. Skipping.`);

@@ -238,7 +238,7 @@ export async function POST(request: NextRequest) {
 
       contacts = Array.from(uniqueContacts.values());
       console.log(`[Send Message API] Total unique contacts after merge: ${contacts.length} (removed ${allContacts.length - contacts.length} duplicates)`);
-      
+
       // Log contact details for debugging
       if (contacts.length === 0) {
         console.error(`[Send Message API] ⚠️ NO CONTACTS FOUND after deduplication!`, {
@@ -300,15 +300,14 @@ export async function POST(request: NextRequest) {
       console.log(`[Send Message API] Large batch detected (${contacts.length} contacts), creating background job`);
 
       try {
-        // Create job with status 'processing' (not 'pending') so cron doesn't pick it up
-        // We're about to trigger the process-send-job endpoint directly
+        // Create job with status 'pending' so it can be picked up by cron if direct trigger fails
         // CRITICAL: Store deduplicated contactIds (contacts array is already deduplicated)
         // Use the unique contact_ids from the fetched contacts to ensure consistency
         const uniqueContactIdsForJob = contacts.map((c: any) => {
           // Prefer storing contact_id if available, otherwise use database id
           return c.contact_id || c.id;
         });
-        
+
         const { data: sendJob, error: jobError } = await supabaseServer
           .from("send_jobs")
           .insert({
@@ -316,7 +315,7 @@ export async function POST(request: NextRequest) {
             contact_ids: uniqueContactIdsForJob, // Store deduplicated contact IDs
             message: message.trim(),
             attachment: attachment || null,
-            status: "processing", // NOT 'pending' - prevents cron from picking it up
+            status: "pending", // Changed to 'pending' so cron can pick it up if trigger fails
             total_count: contacts.length, // Use deduplicated count
             started_at: new Date().toISOString() // Mark as started
           })
@@ -344,37 +343,44 @@ export async function POST(request: NextRequest) {
           // Fall through to try sending directly (may timeout but better than failing completely)
           console.log("[Send Message API] Failed to create job, attempting direct send (may timeout)");
         } else if (sendJob) {
-          console.log(`[Send Message API] Background job created successfully: ${sendJob.id}`);
+          console.log(`[Send Message API] Background job created successfully: ${sendJob.id} with status: pending`);
 
-          // Trigger background processing asynchronously (don't wait for it)
-          // Pass the access token so the job processor can fetch pages if needed
-          // Note: We don't use Authorization header since process-send-job accepts accessToken in body
-          let triggerUrl = 'http://localhost:3000';
-          if (process.env.NEXTAUTH_URL) {
-            triggerUrl = process.env.NEXTAUTH_URL;
-          } else if (process.env.VERCEL_URL) {
-            triggerUrl = `https://${process.env.VERCEL_URL}`;
-          }
-          triggerUrl = `${triggerUrl}/api/facebook/messages/process-send-job`;
-          fetch(triggerUrl, {
-            method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              jobId: sendJob.id,
-              accessToken: (session as any).accessToken
-            }),
-          }).then(response => {
-            if (!response.ok) {
-              console.error(`[Send Message API] Failed to trigger background job: ${response.status} ${response.statusText}`);
-            } else {
-              console.log(`[Send Message API] Background job trigger sent successfully for job ${sendJob.id}`);
+          // Try to trigger background processing immediately
+          // If this fails, cron will pick it up (since status is 'pending')
+          try {
+            let triggerUrl = 'http://localhost:3000';
+            if (process.env.NEXTAUTH_URL) {
+              triggerUrl = process.env.NEXTAUTH_URL;
+            } else if (process.env.VERCEL_URL) {
+              triggerUrl = `https://${process.env.VERCEL_URL}`;
             }
-          }).catch(err => {
-            console.error("[Send Message API] Failed to trigger background job:", err);
-            // Job will be picked up by cron or manual trigger
-          });
+            triggerUrl = `${triggerUrl}/api/facebook/messages/process-send-job`;
+
+            // Try to trigger synchronously with timeout, but don't block the response
+            fetch(triggerUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                jobId: sendJob.id,
+                accessToken: (session as any).accessToken
+              }),
+              // Add signal for timeout after 5 seconds
+              signal: AbortSignal.timeout(5000)
+            }).then(response => {
+              if (!response.ok) {
+                console.warn(`[Send Message API] Trigger returned ${response.status}, but job will be picked up by cron`);
+              } else {
+                console.log(`[Send Message API] Background job trigger sent successfully for job ${sendJob.id}`);
+              }
+            }).catch(err => {
+              // If trigger fails, that's okay - cron will pick up the job
+              console.warn(`[Send Message API] Failed to trigger background job immediately (${err.message}), but job is in 'pending' status and will be picked up by cron`);
+            });
+          } catch (triggerError: any) {
+            console.warn(`[Send Message API] Exception triggering job: ${triggerError.message}, but job is in 'pending' status and will be picked up by cron`);
+          }
 
           return NextResponse.json({
             success: true,
@@ -386,7 +392,7 @@ export async function POST(request: NextRequest) {
               scheduled: false,
               backgroundJob: true,
               jobId: sendJob.id,
-              message: `Large batch detected. Processing ${contacts.length} messages in the background. Check job status for progress.`
+              message: `Large batch detected (${contacts.length} contacts). Job created and processing will start immediately. If you don't see progress, check back in 2 minutes - the job will be automatically processed by the system.`
             }
           });
         } else {
@@ -426,7 +432,7 @@ export async function POST(request: NextRequest) {
       const uniqueContactIdsForSchedule = contacts.map((c: any) => {
         return c.contact_id || c.id;
       });
-      
+
       const { data: scheduledMessage, error: scheduleError } = await supabaseServer
         .from("scheduled_messages")
         .insert({
@@ -603,8 +609,8 @@ export async function POST(request: NextRequest) {
             });
           }
 
-          // Rate limiting
-          await new Promise(resolve => setTimeout(resolve, 100));
+          // Rate limiting (50ms for faster processing)
+          await new Promise(resolve => setTimeout(resolve, 50));
         } catch (error: any) {
           // Remove from sent set on error (allow retry)
           sentTextToContacts.delete(String(contact.contact_id));
