@@ -113,3 +113,4 @@ supabase migration up
 2. Add frontend UI to show job progress in real-time
 3. Add job cancellation capability
 4. Add email/notification when job completes
+

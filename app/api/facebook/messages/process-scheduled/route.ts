@@ -291,9 +291,25 @@ async function processScheduledMessage(scheduledMessage: ScheduledMessageRecord)
       coerceContactIds(scheduledMessage.contact_ids)
     );
 
+    // CRITICAL: Deduplicate contacts by contact_id before grouping (contact_id is globally unique)
+    const uniqueContacts = new Map<string, ContactRecord>();
+    for (const contact of contacts) {
+      const key = contact.contact_id;
+      if (!uniqueContacts.has(key)) {
+        uniqueContacts.set(key, contact);
+      } else {
+        console.warn(`[Process Scheduled] ⚠️ DUPLICATE DETECTED: Skipping duplicate contact: ${contact.contact_name} (contact_id: ${contact.contact_id})`);
+      }
+    }
+    const deduplicatedContacts = Array.from(uniqueContacts.values());
+
+    if (deduplicatedContacts.length !== contacts.length) {
+      console.warn(`[Process Scheduled] ⚠️ Removed ${contacts.length - deduplicatedContacts.length} duplicate contacts (${contacts.length} -> ${deduplicatedContacts.length} unique)`);
+    }
+
     // Group by page
     const contactsByPage = new Map<string, ContactRecord[]>();
-    for (const contact of contacts) {
+    for (const contact of deduplicatedContacts) {
       if (!contactsByPage.has(contact.page_id)) {
         contactsByPage.set(contact.page_id, []);
       }

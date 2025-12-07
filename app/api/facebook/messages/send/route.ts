@@ -72,11 +72,20 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const { contactIds, message, scheduleDate, attachment } = body;
+    let { contactIds, message, scheduleDate, attachment } = body;
+
+    // CRITICAL: Deduplicate contactIds BEFORE processing to prevent duplicate sends
+    // Remove duplicates from contactIds array to ensure each contact is only processed once
+    const uniqueContactIds = Array.from(new Set(contactIds));
+    if (uniqueContactIds.length !== contactIds.length) {
+      console.warn(`[Send Message API] Removed ${contactIds.length - uniqueContactIds.length} duplicate contact IDs from request`);
+      contactIds = uniqueContactIds; // Use deduplicated array
+    }
 
     console.log("[Send Message API] Received request:", {
       requestId,
       contactIdsCount: contactIds?.length,
+      originalCount: Array.isArray(body.contactIds) ? body.contactIds.length : 0,
       contactIds: contactIds,
       userId,
       hasMessage: !!message
@@ -198,18 +207,21 @@ export async function POST(request: NextRequest) {
 
       // Merge both results and remove duplicates
       const allContacts = [...contactsByDbId, ...contactsByContactId];
-      const uniqueContacts = new Map();
+      const uniqueContacts = new Map<string, any>();
 
       for (const contact of allContacts) {
-        // Use a composite key to ensure uniqueness
-        const key = `${contact.page_id}_${contact.contact_id}`;
+        // CRITICAL: Use contact_id as the unique key (contact_id is globally unique)
+        // This ensures we only process each contact once, even if they appear with different database IDs
+        const key = contact.contact_id;
         if (!uniqueContacts.has(key)) {
           uniqueContacts.set(key, contact);
+        } else {
+          console.log(`[Send Message API] Skipping duplicate contact: ${contact.contact_name} (contact_id: ${contact.contact_id})`);
         }
       }
 
       contacts = Array.from(uniqueContacts.values());
-      console.log(`[Send Message API] Total unique contacts after merge: ${contacts.length}`);
+      console.log(`[Send Message API] Total unique contacts after merge: ${contacts.length} (removed ${allContacts.length - contacts.length} duplicates)`);
     } catch (dbError: any) {
       console.error("[Send Message API] Database error fetching contacts:", dbError);
       contactsError = dbError;
@@ -257,15 +269,22 @@ export async function POST(request: NextRequest) {
       try {
         // Create job with status 'processing' (not 'pending') so cron doesn't pick it up
         // We're about to trigger the process-send-job endpoint directly
+        // CRITICAL: Store deduplicated contactIds (contacts array is already deduplicated)
+        // Use the unique contact_ids from the fetched contacts to ensure consistency
+        const uniqueContactIdsForJob = contacts.map((c: any) => {
+          // Prefer storing contact_id if available, otherwise use database id
+          return c.contact_id || c.id;
+        });
+        
         const { data: sendJob, error: jobError } = await supabaseServer
           .from("send_jobs")
           .insert({
             user_id: userId,
-            contact_ids: contactIds,
+            contact_ids: uniqueContactIdsForJob, // Store deduplicated contact IDs
             message: message.trim(),
             attachment: attachment || null,
             status: "processing", // NOT 'pending' - prevents cron from picking it up
-            total_count: contacts.length,
+            total_count: contacts.length, // Use deduplicated count
             started_at: new Date().toISOString() // Mark as started
           })
           .select()
@@ -370,11 +389,16 @@ export async function POST(request: NextRequest) {
       }
 
       // Store scheduled message in database
+      // CRITICAL: Use unique contact IDs from fetched contacts (already deduplicated)
+      const uniqueContactIdsForSchedule = contacts.map((c: any) => {
+        return c.contact_id || c.id;
+      });
+      
       const { data: scheduledMessage, error: scheduleError } = await supabaseServer
         .from("scheduled_messages")
         .insert({
           user_id: userId,
-          contact_ids: contactIds,
+          contact_ids: uniqueContactIdsForSchedule, // Store deduplicated contact IDs
           message: message.trim(),
           attachment: attachment || null,
           scheduled_for: scheduledDate.toISOString(),
@@ -465,11 +489,14 @@ export async function POST(request: NextRequest) {
 
       // Send TEXT to each contact on this page
       for (const contact of pageContacts) {
-        // Skip if already sent text to this contact
+        // CRITICAL: Skip if already sent text to this contact (check BEFORE processing)
         if (sentTextToContacts.has(contact.contact_id)) {
-          console.log(`[Send Message API] Skipping duplicate TEXT for ${contact.contact_name}`);
+          console.warn(`[Send Message API] ⚠️ DUPLICATE PREVENTION: Skipping duplicate TEXT send to ${contact.contact_name} (contact_id: ${contact.contact_id})`);
           continue;
         }
+
+        // Mark as processing IMMEDIATELY to prevent concurrent sends to same contact
+        sentTextToContacts.add(contact.contact_id);
 
         try {
           // Replace {FirstName} placeholder
@@ -477,7 +504,7 @@ export async function POST(request: NextRequest) {
           const firstName = contact.contact_name?.split(' ')[0] || 'there';
           personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
 
-          console.log(`[Send Message API] Sending TEXT to ${contact.contact_name}...`);
+          console.log(`[Send Message API] Sending TEXT to ${contact.contact_name} (${contact.contact_id})...`);
 
           const textPayload = {
             recipient: { id: contact.contact_id },
@@ -499,12 +526,13 @@ export async function POST(request: NextRequest) {
 
           if (response.ok && !data.error) {
             results.success++;
-            sentTextToContacts.add(contact.contact_id);
             console.log(`✅ Sent TEXT to ${contact.contact_name} (${contact.contact_id})`);
           } else {
+            // Remove from sent set if send failed (allow retry)
+            sentTextToContacts.delete(contact.contact_id);
             results.failed++;
             const errorMsg = data.error?.message || "Unknown error";
-            console.error(`❌ Failed TEXT to ${contact.contact_name}: ${errorMsg}`);
+            console.error(`❌ Failed TEXT to ${contact.contact_name} (${contact.contact_id}): ${errorMsg}`);
             results.errors.push({
               contact: contact.contact_name,
               page: contact.page_name,
@@ -515,8 +543,10 @@ export async function POST(request: NextRequest) {
           // Rate limiting
           await new Promise(resolve => setTimeout(resolve, 100));
         } catch (error: any) {
+          // Remove from sent set on error (allow retry)
+          sentTextToContacts.delete(contact.contact_id);
           results.failed++;
-          console.error(`❌ Error sending TEXT to ${contact.contact_name}:`, error);
+          console.error(`❌ Error sending TEXT to ${contact.contact_name} (${contact.contact_id}):`, error);
           results.errors.push({
             contact: contact.contact_name,
             page: contact.page_name,
@@ -555,14 +585,24 @@ export async function POST(request: NextRequest) {
 
         // Send MEDIA to each contact on this page
         for (const contact of pageContacts) {
-          // Skip if already sent media to this contact
+          // CRITICAL: Skip if already sent media to this contact (check BEFORE processing)
+          // Also skip if we haven't sent text to this contact (text must come first)
           if (sentMediaToContacts.has(contact.contact_id)) {
-            console.log(`[Send Message API] Skipping duplicate MEDIA for ${contact.contact_name}`);
+            console.warn(`[Send Message API] ⚠️ DUPLICATE PREVENTION: Skipping duplicate MEDIA send to ${contact.contact_name} (contact_id: ${contact.contact_id})`);
             continue;
           }
 
+          // Skip if text wasn't sent (media should only be sent after successful text)
+          if (!sentTextToContacts.has(contact.contact_id)) {
+            console.warn(`[Send Message API] ⚠️ Skipping MEDIA for ${contact.contact_name} - text was not sent first`);
+            continue;
+          }
+
+          // Mark as processing IMMEDIATELY to prevent concurrent sends to same contact
+          sentMediaToContacts.add(contact.contact_id);
+
           try {
-            console.log(`[Send Message API] Sending MEDIA to ${contact.contact_name}...`);
+            console.log(`[Send Message API] Sending MEDIA to ${contact.contact_name} (${contact.contact_id})...`);
 
             const mediaPayload = {
               recipient: { id: contact.contact_id },
@@ -591,18 +631,21 @@ export async function POST(request: NextRequest) {
             const data = await response.json();
 
             if (response.ok && !data.error) {
-              sentMediaToContacts.add(contact.contact_id);
               console.log(`✅ Sent MEDIA to ${contact.contact_name} (${contact.contact_id})`);
             } else {
+              // Remove from sent set if send failed (allow retry)
+              sentMediaToContacts.delete(contact.contact_id);
               const errorMsg = data.error?.message || "Unknown error";
-              console.error(`❌ Failed MEDIA to ${contact.contact_name}: ${errorMsg}`);
+              console.error(`❌ Failed MEDIA to ${contact.contact_name} (${contact.contact_id}): ${errorMsg}`);
               // Don't add to failed count since text was already counted
             }
 
             // Rate limiting
             await new Promise(resolve => setTimeout(resolve, 100));
           } catch (error: any) {
-            console.error(`❌ Error sending MEDIA to ${contact.contact_name}:`, error);
+            // Remove from sent set on error (allow retry)
+            sentMediaToContacts.delete(contact.contact_id);
+            console.error(`❌ Error sending MEDIA to ${contact.contact_name} (${contact.contact_id}):`, error);
           }
         }
       }

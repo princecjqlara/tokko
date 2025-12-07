@@ -92,3 +92,4 @@ All API routes should:
 3. Screenshot of the error (if possible)
 
 This will help identify the specific issue and provide a targeted fix.
+

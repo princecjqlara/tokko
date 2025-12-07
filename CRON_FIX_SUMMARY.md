@@ -122,3 +122,4 @@ Note: Even with CRON_SECRET set, Vercel Cron requests will be allowed (they're i
 3. **Test with a scheduled message** - schedule a message for a few minutes in the future
 4. **Verify it sends** when the cron runs
 
+

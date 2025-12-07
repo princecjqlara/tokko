@@ -46,12 +46,19 @@ function coerceContactIds(raw: any): (string | number)[] {
 }
 
 async function fetchContactsForSendJob(userId: string, contactIds: (string | number)[]): Promise<ContactRecord[]> {
+  // CRITICAL: First, deduplicate the contactIds array to prevent fetching the same contact multiple times
+  const uniqueContactIds = Array.from(new Set(contactIds));
+  if (uniqueContactIds.length !== contactIds.length) {
+    console.log(`[fetchContactsForSendJob] Removed ${contactIds.length - uniqueContactIds.length} duplicate contact IDs before fetching`);
+  }
+
   const contacts: ContactRecord[] = [];
+  const seenContactIds = new Set<string>(); // Track by contact_id to prevent duplicates
 
   // Fetch in chunks to avoid Supabase IN() limits
   const chunkSize = 200;
-  for (let i = 0; i < contactIds.length; i += chunkSize) {
-    const chunk = contactIds.slice(i, i + chunkSize);
+  for (let i = 0; i < uniqueContactIds.length; i += chunkSize) {
+    const chunk = uniqueContactIds.slice(i, i + chunkSize);
 
     // Try by database id first
     const { data: byId, error: idError } = await supabaseServer
@@ -61,7 +68,13 @@ async function fetchContactsForSendJob(userId: string, contactIds: (string | num
       .eq("user_id", userId);
 
     if (!idError && byId) {
-      contacts.push(...byId);
+      byId.forEach(c => {
+        // Use contact_id as the unique key (globally unique)
+        if (!seenContactIds.has(c.contact_id)) {
+          seenContactIds.add(c.contact_id);
+          contacts.push(c);
+        }
+      });
     }
 
     // Also try by contact_id
@@ -72,16 +85,17 @@ async function fetchContactsForSendJob(userId: string, contactIds: (string | num
       .eq("user_id", userId);
 
     if (!contactIdError && byContactId) {
-      // Avoid duplicates
-      const existingIds = new Set(contacts.map(c => c.id));
+      // Use contact_id as the unique key to prevent duplicates
       byContactId.forEach(c => {
-        if (!existingIds.has(c.id)) {
+        if (!seenContactIds.has(c.contact_id)) {
+          seenContactIds.add(c.contact_id);
           contacts.push(c);
         }
       });
     }
   }
 
+  console.log(`[fetchContactsForSendJob] Fetched ${contacts.length} unique contacts from ${uniqueContactIds.length} contact IDs`);
   return contacts;
 }
 
@@ -252,18 +266,22 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
   const localSentIds = sentContactIds || new Set<string>();
 
   for (const contact of contacts) {
-    // Skip if we've already sent to this contact in this job run
+    // CRITICAL: Skip if we've already sent to this contact in this job run
+    // Check BEFORE marking to prevent race conditions
     if (localSentIds.has(contact.contact_id)) {
-      console.log(`⏭️ [sendMessagesForPage] Skipping duplicate contact: ${contact.contact_name} (${contact.contact_id}) - already sent in this job`);
+      console.warn(`⏭️ [sendMessagesForPage] ⚠️ DUPLICATE PREVENTION: Skipping duplicate contact: ${contact.contact_name} (contact_id: ${contact.contact_id}) - already marked as sent in this job`);
       continue;
     }
 
     // CRITICAL: Mark as "processing" immediately BEFORE sending to prevent race conditions
     // This ensures that even if the function is called concurrently, we won't send twice
+    // Add to both local and shared Sets atomically
     localSentIds.add(contact.contact_id);
     if (sentContactIds) {
       sentContactIds.add(contact.contact_id);
     }
+    
+    console.log(`[sendMessagesForPage] Processing contact: ${contact.contact_name} (contact_id: ${contact.contact_id}) - marked as sending`);
 
     const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment);
 
@@ -334,8 +352,15 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   const lastUpdated = new Date(sendJob.updated_at || sendJob.started_at || new Date().toISOString());
   const secondsSinceLastUpdate = (Date.now() - lastUpdated.getTime()) / 1000;
 
-  if (sendJob.status === "running" && secondsSinceLastUpdate < 60) {
-    console.log(`[Process Send Job] Job ${sendJob.id} was updated ${secondsSinceLastUpdate.toFixed(1)}s ago, another process is likely working on it. Skipping.`);
+  // More aggressive check: skip if job was updated recently (within 90 seconds) to prevent concurrent processing
+  if (sendJob.status === "running" && secondsSinceLastUpdate < 90) {
+    console.warn(`[Process Send Job] ⚠️ Job ${sendJob.id} was updated ${secondsSinceLastUpdate.toFixed(1)}s ago, another process is likely working on it. Skipping to prevent duplicate processing.`);
+    return;
+  }
+  
+  // Also check "processing" status with same logic
+  if (sendJob.status === "processing" && secondsSinceLastUpdate < 90) {
+    console.warn(`[Process Send Job] ⚠️ Job ${sendJob.id} is in 'processing' status and was updated ${secondsSinceLastUpdate.toFixed(1)}s ago. Another process is likely working on it. Skipping.`);
     return;
   }
 
@@ -419,20 +444,21 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       return;
     }
 
-    // Remove duplicates by contact_id to prevent sending twice to same contact
+    // CRITICAL: Remove duplicates by contact_id to prevent sending twice to same contact
+    // Use contact_id as the unique key (it's globally unique across all pages)
     const uniqueContacts = new Map<string, ContactRecord>();
     for (const contact of contacts) {
       const key = contact.contact_id;
       if (!uniqueContacts.has(key)) {
         uniqueContacts.set(key, contact);
       } else {
-        console.log(`[Process Send Job] Skipping duplicate contact: ${contact.contact_name} (${contact.contact_id})`);
+        console.warn(`[Process Send Job] ⚠️ DUPLICATE DETECTED: Skipping duplicate contact: ${contact.contact_name} (contact_id: ${contact.contact_id}, page_id: ${contact.page_id})`);
       }
     }
     const deduplicatedContacts = Array.from(uniqueContacts.values());
 
     if (deduplicatedContacts.length !== contacts.length) {
-      console.log(`[Process Send Job] Removed ${contacts.length - deduplicatedContacts.length} duplicate contacts`);
+      console.warn(`[Process Send Job] ⚠️ Removed ${contacts.length - deduplicatedContacts.length} duplicate contacts (${contacts.length} -> ${deduplicatedContacts.length} unique)`);
     }
 
     // Get already sent contacts from job to prevent duplicates on resume

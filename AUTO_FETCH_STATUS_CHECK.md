@@ -188,3 +188,4 @@ Your auto-fetch system is **fully implemented** and should work automatically. T
 
 If it's not working, check the webhook configuration and frontend polling status using the steps above.
 
+

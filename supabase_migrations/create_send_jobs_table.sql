@@ -71,3 +71,4 @@ CREATE TRIGGER update_send_jobs_updated_at_trigger
     BEFORE UPDATE ON public.send_jobs
     FOR EACH ROW
     EXECUTE FUNCTION update_send_jobs_updated_at();
+
