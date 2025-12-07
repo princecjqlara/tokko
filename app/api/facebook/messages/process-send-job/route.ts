@@ -894,12 +894,15 @@ export async function GET(request: NextRequest) {
     }
 
     const MAX_JOBS_PER_RUN = 5;
+    const staleCutoff = new Date(Date.now() - 120000).toISOString(); // resume running/processing only if stale (>120s)
 
-    // Fetch pending jobs immediately; allow running jobs too (resume), no stale filter so we don't miss fresh work.
+    // Fetch pending immediately; only pick up running/processing if stale to avoid double-processing fresh work.
     let query = supabaseServer
       .from("send_jobs")
       .select("*")
-      .in("status", ["pending", "running"])
+      .or(
+        `status.eq.pending,status.eq.failed,and(status.eq.running,updated_at.lte.${staleCutoff}),and(status.eq.processing,updated_at.lte.${staleCutoff})`
+      )
       .order("started_at", { ascending: true })
       .limit(MAX_JOBS_PER_RUN);
 
