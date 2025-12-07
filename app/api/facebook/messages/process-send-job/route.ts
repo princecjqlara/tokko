@@ -895,17 +895,11 @@ export async function GET(request: NextRequest) {
 
     const MAX_JOBS_PER_RUN = 5;
 
-    // Find pending AND running jobs (to resume incomplete jobs)
-    // BUT: Skip jobs that were updated recently (within last 60 seconds) to prevent concurrent processing
-    // This gives the direct trigger enough time between database updates
-    // For cron: process all pending/running jobs
-    // For manual: only process user's jobs
-    const sixtySecondsAgo = new Date(Date.now() - 60000).toISOString();
+    // Fetch pending jobs immediately; allow running jobs too (resume), no stale filter so we don't miss fresh work.
     let query = supabaseServer
       .from("send_jobs")
       .select("*")
-      .in("status", ["pending", "running"]) // Also process running jobs to resume them (NOT 'processing' - those are being handled directly)
-      .or(`updated_at.lt.${sixtySecondsAgo},updated_at.is.null`) // Only process jobs not updated in last 60 seconds
+      .in("status", ["pending", "running"])
       .order("started_at", { ascending: true })
       .limit(MAX_JOBS_PER_RUN);
 
@@ -928,6 +922,12 @@ export async function GET(request: NextRequest) {
     if (!pendingJobs || pendingJobs.length === 0) {
       return NextResponse.json({ message: "No pending jobs", processed: 0 });
     }
+
+    logEvent("Jobs fetched for processing", {
+      count: pendingJobs.length,
+      jobIds: pendingJobs.map((j: any) => j.id),
+      statuses: pendingJobs.map((j: any) => j.status)
+    });
 
     // Process jobs sequentially
     let processed = 0;
