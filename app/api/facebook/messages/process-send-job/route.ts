@@ -32,8 +32,19 @@ type ContactRecord = {
 
 const MESSAGE_SEND_THROTTLE_MS = 50; // rate limit between sends (increased from 100ms for faster processing)
 const ATTACHMENT_THROTTLE_MS = 300; // give media a moment to settle (reduced from 500ms)
+const PAGE_CHUNK_SIZE = 300; // break huge pages into smaller chunks so we can checkpoint progress
+const TIMEOUT_BUFFER_MS = 15000; // stop ~15s before the Vercel limit so we can persist progress safely
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (chunkSize <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += chunkSize) {
+    chunks.push(items.slice(i, i + chunkSize));
+  }
+  return chunks;
+}
 
 function coerceContactIds(raw: any): (string | number)[] {
   if (!Array.isArray(raw)) return [];
@@ -526,7 +537,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     const sentContactIds = new Set<string>(sentContactIdsSet);
 
     let processedPages = 0;
-    let totalPages = contactsByPage.size;
+    const totalPages = contactsByPage.size;
 
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
       // Check if job has been cancelled
@@ -541,71 +552,103 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
         return; // Stop immediately
       }
 
-      // Check timeout before processing each page
-      const elapsed = Date.now() - startTime;
-      if (elapsed > VERCEL_TIMEOUT) {
-        console.warn(`[Process Send Job] Approaching timeout (${Math.round(elapsed / 1000)}s), stopping at page ${pageId} (${processedPages}/${totalPages} pages processed)`);
-        // Update job with partial progress - mark as "running" so it can be resumed
+      const pageChunks = chunkArray(pageContacts, PAGE_CHUNK_SIZE);
+      console.log(`[Process Send Job] Processing page ${pageId} (${pageContacts.length} contacts, ${processedPages + 1}/${totalPages} pages, ${pageChunks.length} chunk(s))`);
+
+      for (let chunkIndex = 0; chunkIndex < pageChunks.length; chunkIndex++) {
+        const elapsed = Date.now() - startTime;
+        const chunkNumber = chunkIndex + 1;
+        const chunk = pageChunks[chunkIndex];
+
+        if (elapsed > VERCEL_TIMEOUT - TIMEOUT_BUFFER_MS) {
+          const sentContactIdsArray = Array.from(sentContactIds);
+          const actualErrors = messageErrors.filter((e: any) => !e._metadata);
+          const errorsWithMetadata = [
+            ...actualErrors,
+            {
+              error: `Timeout: Processed ${messageSuccess + messageFailed} of ${contactsToProcess.length + alreadyProcessed} contacts. Job will resume on next cron run.`,
+              _metadata: {
+                sent_contact_ids: sentContactIdsArray,
+                last_updated: new Date().toISOString(),
+                total_sent: sentContactIdsArray.length,
+                page: pageId,
+                chunk: chunkNumber,
+                chunks_total: pageChunks.length
+              }
+            }
+          ];
+
+          await supabaseServer
+            .from("send_jobs")
+            .update({
+              sent_count: messageSuccess,
+              failed_count: messageFailed,
+              errors: errorsWithMetadata,
+              updated_at: new Date().toISOString(),
+              status: "running" // Keep as running so cron can resume it
+            })
+            .eq("id", sendJob.id);
+
+          console.warn(`[Process Send Job] Approaching timeout (${Math.round(elapsed / 1000)}s), pausing at page ${pageId} chunk ${chunkNumber}/${pageChunks.length}`);
+          return; // Exit early, job will be picked up by next cron run
+        }
+
+        const result = await sendMessagesForPage(
+          pageId,
+          chunk,
+          sendJob.message,
+          sendJob.attachment,
+          userAccessToken,
+          sentContactIds // Pass sent tracking to prevent duplicates
+        );
+
+        messageSuccess += result.success;
+        messageFailed += result.failed;
+        messageErrors.push(...result.errors);
+
+        // Update progress after each chunk (important for resume on huge pages)
+        const sentContactIdsArray = Array.from(sentContactIds);
+        const actualErrors = messageErrors.filter((e: any) => !e._metadata);
+        const nearTimeout = (Date.now() - startTime) > VERCEL_TIMEOUT - TIMEOUT_BUFFER_MS && chunkIndex < pageChunks.length - 1;
+        const metadataEntry: any = {
+          _metadata: {
+            sent_contact_ids: sentContactIdsArray,
+            last_updated: new Date().toISOString(),
+            total_sent: sentContactIdsArray.length,
+            page: pageId,
+            chunk: chunkNumber,
+            chunks_total: pageChunks.length
+          }
+        };
+        if (nearTimeout) {
+          metadataEntry.error = `Timeout: Processed ${messageSuccess + messageFailed} of ${contactsToProcess.length + alreadyProcessed} contacts. Job will resume on next cron run.`;
+        }
+        const errorsWithMetadata = [
+          ...actualErrors,
+          metadataEntry
+        ];
+
         await supabaseServer
           .from("send_jobs")
           .update({
             sent_count: messageSuccess,
             failed_count: messageFailed,
-            errors: [...messageErrors, {
-              error: `Timeout: Processed ${messageSuccess + messageFailed} of ${contactsToProcess.length + alreadyProcessed} contacts. Job will resume on next cron run.`,
-              _metadata: { sent_contact_ids: Array.from(sentContactIds) }
-            }],
+            errors: errorsWithMetadata,
             updated_at: new Date().toISOString(),
-            status: "running" // Keep as running so cron can resume it
+            status: "running"
           })
           .eq("id", sendJob.id);
-        console.log(`[Process Send Job] Job ${sendJob.id} paused due to timeout. Will resume on next cron run.`);
-        return; // Exit early, job will be picked up by next cron run
+
+        console.log(`[Process Send Job] Progress: ${messageSuccess} sent, ${messageFailed} failed (${messageSuccess + messageFailed}/${sendJob.total_count || deduplicatedContacts.length} total), page ${pageId} chunk ${chunkNumber}/${pageChunks.length}, sent IDs tracked: ${sentContactIdsArray.length}`);
+
+        // If we're close to timeout after processing this chunk, pause to let cron resume safely
+        if (nearTimeout) {
+          console.warn(`[Process Send Job] Near timeout after chunk ${chunkNumber}/${pageChunks.length} on page ${pageId}, pausing job ${sendJob.id}`);
+          return;
+        }
       }
 
-      console.log(`[Process Send Job] Processing page ${pageId} (${pageContacts.length} contacts, ${processedPages + 1}/${totalPages} pages)`);
-
-      const result = await sendMessagesForPage(
-        pageId,
-        pageContacts,
-        sendJob.message,
-        sendJob.attachment,
-        userAccessToken,
-        sentContactIds // Pass sent tracking to prevent duplicates
-      );
-
-      messageSuccess += result.success;
-      messageFailed += result.failed;
-      messageErrors.push(...result.errors);
       processedPages++;
-
-      // Update progress after each page (important for resume)
-      // Store sent contact IDs in errors array as metadata for resume
-      const sentContactIdsArray = Array.from(sentContactIds);
-      // Remove any existing metadata entries and add fresh one
-      const actualErrors = messageErrors.filter((e: any) => !e._metadata);
-      const errorsWithMetadata = [
-        ...actualErrors,
-        {
-          _metadata: {
-            sent_contact_ids: sentContactIdsArray,
-            last_updated: new Date().toISOString(),
-            total_sent: sentContactIdsArray.length
-          }
-        }
-      ];
-
-      await supabaseServer
-        .from("send_jobs")
-        .update({
-          sent_count: messageSuccess,
-          failed_count: messageFailed,
-          errors: errorsWithMetadata,
-          updated_at: new Date().toISOString()
-        })
-        .eq("id", sendJob.id);
-
-      console.log(`[Process Send Job] Progress: ${messageSuccess} sent, ${messageFailed} failed (${messageSuccess + messageFailed}/${sendJob.total_count || deduplicatedContacts.length} total), sent IDs tracked: ${sentContactIdsArray.length}`);
     }
 
     // Final status update
