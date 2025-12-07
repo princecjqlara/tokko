@@ -382,25 +382,23 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     console.log(`[Process Send Job] Resuming failed job ${sendJob.id} (${totalProcessed}/${totalExpected} processed)`);
   }
 
-  // CRITICAL: Check if job was updated in the last 60 seconds (another process is working on it)
-  // This must match or exceed the cron stale detection window (60 seconds)
+  // CRITICAL: Skip fresh running/processing jobs (updated within stale window) to prevent concurrent processors.
+  const STALE_THRESHOLD_SECONDS = 120;
   const lastUpdated = new Date(sendJob.updated_at || sendJob.started_at || new Date().toISOString());
   const secondsSinceLastUpdate = (Date.now() - lastUpdated.getTime()) / 1000;
 
-  // More aggressive check: skip if job was updated recently (within 90 seconds) to prevent concurrent processing
-  if (sendJob.status === "running" && secondsSinceLastUpdate < 90) {
-    console.warn(`[Process Send Job] ⚠️ Job ${sendJob.id} was updated ${secondsSinceLastUpdate.toFixed(1)}s ago, another process is likely working on it. Skipping to prevent duplicate processing.`);
-    return;
-  }
-
-  // Also check "processing" status with same logic
-  if (sendJob.status === "processing" && secondsSinceLastUpdate < 90) {
-    console.warn(`[Process Send Job] ⚠️ Job ${sendJob.id} is in 'processing' status and was updated ${secondsSinceLastUpdate.toFixed(1)}s ago. Another process is likely working on it. Skipping.`);
+  if ((sendJob.status === "running" || sendJob.status === "processing") && secondsSinceLastUpdate < STALE_THRESHOLD_SECONDS) {
+    logEvent("Skip fresh job (another process likely working)", {
+      jobId: sendJob.id,
+      status: sendJob.status,
+      secondsSinceLastUpdate: secondsSinceLastUpdate.toFixed(1)
+    });
     return;
   }
 
   // Atomically claim the job by updating status and setting a processing marker
   // Only update if status hasn't changed (prevents race conditions)
+  const staleCutoffIso = new Date(Date.now() - 120 * 1000).toISOString();
   const { data: updateResult, error: updateError } = await supabaseServer
     .from("send_jobs")
     .update({
@@ -410,7 +408,9 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
     })
     .eq("id", sendJob.id)
-    .in("status", ["pending", "processing", "running", "failed"]) // Added 'processing' status
+    .or(
+      `status.eq.pending,status.eq.failed,and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`
+    )
     .select()
     .single();
 
