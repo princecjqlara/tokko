@@ -5,6 +5,14 @@ import { supabaseServer } from "@/lib/supabase-server";
 
 export const dynamic = "force-dynamic";
 
+const logStatusEvent = (event: string, details?: Record<string, any>) => {
+  if (details) {
+    console.log(`[Send Job Status] ${event}`, JSON.stringify(details));
+  } else {
+    console.log(`[Send Job Status] ${event}`);
+  }
+};
+
 export async function GET(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
@@ -16,6 +24,8 @@ export async function GET(request: NextRequest) {
     const userId = (session.user as any).id;
     const { searchParams } = new URL(request.url);
     const jobId = searchParams.get("jobId");
+
+    logStatusEvent("GET received", { jobId, userId });
 
     if (!jobId) {
       return NextResponse.json({ error: "jobId is required" }, { status: 400 });
@@ -29,8 +39,17 @@ export async function GET(request: NextRequest) {
       .single();
 
     if (error || !job) {
+      logStatusEvent("Job not found or fetch error", { jobId, error: error?.message });
       return NextResponse.json({ error: "Job not found" }, { status: 404 });
     }
+
+    logStatusEvent("Job status fetched", {
+      jobId,
+      status: job.status,
+      sent_count: job.sent_count,
+      failed_count: job.failed_count,
+      total_count: job.total_count
+    });
 
     return NextResponse.json({
       success: true,
@@ -47,11 +66,15 @@ export async function GET(request: NextRequest) {
       }
     });
   } catch (error: any) {
-    console.error("Error in send-job-status route:", error);
+    console.error("[Send Job Status] Error in send-job-status route:", {
+      message: error?.message,
+      stack: error?.stack
+    });
     return NextResponse.json(
       { error: "Internal server error", details: error.message },
       { status: 500 }
     );
   }
 }
+
 

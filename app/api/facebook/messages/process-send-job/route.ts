@@ -37,6 +37,23 @@ const TIMEOUT_BUFFER_MS = 15000; // stop ~15s before the Vercel limit so we can 
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
+const logEvent = (event: string, details?: Record<string, any>) => {
+  if (details) {
+    console.log(`[Process Send Job] ${event}`, JSON.stringify(details));
+  } else {
+    console.log(`[Process Send Job] ${event}`);
+  }
+};
+
+const logError = (event: string, error: any, details?: Record<string, any>) => {
+  const payload = {
+    message: error?.message,
+    stack: error?.stack,
+    ...details
+  };
+  console.error(`[Process Send Job] ${event}`, JSON.stringify(payload));
+};
+
 function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   if (chunkSize <= 0) return [items];
   const chunks: T[][] = [];
@@ -338,7 +355,14 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   // Generate a unique processing ID for this instance
   const processingId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
 
-  console.log(`[Process Send Job] Attempting to claim job ${sendJob.id} with processing ID: ${processingId}`);
+  logEvent("Attempting to claim job", {
+    jobId: sendJob.id,
+    processingId,
+    status: sendJob.status,
+    sent_count: sendJob.sent_count,
+    failed_count: sendJob.failed_count,
+    total_count: sendJob.total_count
+  });
 
   // Check if job is completed or permanently failed
   if (sendJob.status === "completed") {
@@ -441,6 +465,11 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   try {
     const contactIds = coerceContactIds(sendJob.contact_ids);
     const contacts = await fetchContactsForSendJob(sendJob.user_id, contactIds);
+    logEvent("Contacts fetched for job", {
+      jobId: sendJob.id,
+      requestedIds: contactIds.length,
+      fetchedContacts: contacts.length
+    });
 
     if (contacts.length === 0) {
       await supabaseServer
@@ -764,6 +793,8 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const { jobId, accessToken } = body;
 
+    logEvent("POST received", { jobId, hasAccessToken: !!accessToken });
+
     if (!jobId) {
       return NextResponse.json({ error: "jobId is required" }, { status: 400 });
     }
@@ -823,7 +854,7 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json({ success: true, message: "Job processed" });
   } catch (error: any) {
-    console.error("Error in process-send-job route:", error);
+    logError("Fatal error in POST handler", error);
     return NextResponse.json(
       { error: "Internal server error", details: error.message },
       { status: 500 }
@@ -834,6 +865,8 @@ export async function POST(request: NextRequest) {
 // GET: Process pending send jobs (for cron or manual trigger)
 export async function GET(request: NextRequest) {
   try {
+    logEvent("GET cron/trigger received");
+
     // Similar auth check as process-scheduled
     const authHeader = request.headers.get("authorization");
     const vercelCronHeader = request.headers.get("x-vercel-cron");
@@ -856,6 +889,7 @@ export async function GET(request: NextRequest) {
     // For manual triggers, require session
     const session = await getServerSession(authOptions);
     if (!isVercelCron && !session) {
+      logEvent("GET unauthorized", { isVercelCron, hasSession: !!session });
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -884,7 +918,7 @@ export async function GET(request: NextRequest) {
     const { data: pendingJobs, error: pendingError } = await query;
 
     if (pendingError) {
-      console.error("Error fetching pending send jobs:", pendingError);
+      logError("Error fetching pending send jobs", pendingError);
       return NextResponse.json(
         { error: "Failed to fetch jobs", details: pendingError.message },
         { status: 500 }
@@ -914,7 +948,7 @@ export async function GET(request: NextRequest) {
       processed
     });
   } catch (error: any) {
-    console.error("Error in process-send-job GET route:", error);
+    logError("Fatal error in GET handler", error);
     return NextResponse.json(
       { error: "Internal server error", details: error.message },
       { status: 500 }
