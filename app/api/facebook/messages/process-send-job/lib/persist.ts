@@ -13,7 +13,7 @@ type ProgressParams = {
   pageId?: string;
   chunkNumber?: number;
   chunksTotal?: number;
-  remainingContactIds?: string[];
+  pendingContactIds?: string[];
 };
 
 type FinalizeParams = {
@@ -23,7 +23,7 @@ type FinalizeParams = {
   messageErrors: any[];
   totalExpected: number;
   sentContactIds: Set<string>;
-  remainingContactIds?: string[];
+  pendingContactIds?: string[];
 };
 
 export async function persistProgress(params: ProgressParams) {
@@ -38,14 +38,16 @@ export async function persistProgress(params: ProgressParams) {
     pageId,
     chunkNumber,
     chunksTotal,
-    remainingContactIds
+    pendingContactIds
   } =
     params;
   const sentContactIdsArray = Array.from(sentContactIds);
+  const pendingIds = pendingContactIds || job.contact_ids || [];
   const actualErrors = messageErrors.filter((e: any) => !e._metadata);
   const metadataEntry: any = {
     _metadata: {
       sent_contact_ids: sentContactIdsArray,
+      pending_contact_ids: pendingIds,
       last_updated: new Date().toISOString(),
       total_sent: sentContactIdsArray.length
     }
@@ -63,6 +65,7 @@ export async function persistProgress(params: ProgressParams) {
       sent_count: messageSuccess,
       failed_count: messageFailed,
       errors: [...actualErrors, metadataEntry],
+      contact_ids: pendingIds,
       updated_at: new Date().toISOString(),
       status
     })
@@ -70,11 +73,11 @@ export async function persistProgress(params: ProgressParams) {
 }
 
 export async function finalizeJob(params: FinalizeParams) {
-  const { job, messageSuccess, messageFailed, messageErrors, totalExpected, sentContactIds, remainingContactIds } = params;
+  const { job, messageSuccess, messageFailed, messageErrors, totalExpected, sentContactIds, pendingContactIds } = params;
   const totalProcessed = messageSuccess + messageFailed;
   const remainingContacts = totalExpected - totalProcessed;
   const sentContactIdsArray = Array.from(sentContactIds);
-  const remainingIds = remainingContactIds || [];
+  const remainingIds = pendingContactIds || [];
 
   if (await isJobCancelled(job.id)) return;
 
@@ -99,6 +102,7 @@ export async function finalizeJob(params: FinalizeParams) {
       {
         _metadata: {
           sent_contact_ids: sentContactIdsArray,
+          pending_contact_ids: remainingIds,
           last_updated: new Date().toISOString()
         }
       }
@@ -112,7 +116,7 @@ export async function finalizeJob(params: FinalizeParams) {
       sent_count: messageSuccess,
       failed_count: messageFailed,
       errors: errorsToPersist,
-      contact_ids: remainingIds,
+      contact_ids: finalStatus === "completed" ? [] : remainingIds,
       completed_at: finalStatus === "completed" ? new Date().toISOString() : null,
       updated_at: new Date().toISOString()
     })

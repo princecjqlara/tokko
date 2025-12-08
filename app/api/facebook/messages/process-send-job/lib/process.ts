@@ -97,7 +97,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
         const elapsed = Date.now() - startTime;
         const chunkNumber = chunkIndex + 1;
         const chunk = pageChunks[chunkIndex];
-        const remainingContactIds = deduplicatedContacts.map(c => c.contact_id).filter(id => !sentContactIds.has(id));
+        const pendingContactIds = deduplicatedContacts.map(c => c.contact_id).filter(id => !sentContactIds.has(id));
 
         if (await isJobCancelled(claimedJob.id)) {
           await persistProgress({
@@ -107,7 +107,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
             messageFailed,
             messageErrors,
             sentContactIds,
-            remainingContactIds
+            pendingContactIds
           });
           return;
         }
@@ -124,7 +124,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
             pageId,
             chunkNumber,
             chunksTotal: pageChunks.length,
-            remainingContactIds
+            pendingContactIds
           });
           return;
         }
@@ -169,7 +169,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
           chunkNumber,
           chunksTotal: pageChunks.length,
           timeout: nearTimeout,
-          remainingContactIds: remainingAfterChunk
+          pendingContactIds: remainingAfterChunk
         });
 
         if (nearTimeout) return;
@@ -184,7 +184,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
       messageErrors,
       totalExpected: effectiveTotal,
       sentContactIds,
-      remainingContactIds: remainingAfterAll
+      pendingContactIds: remainingAfterAll
     });
   } catch (error: any) {
     logError(`Error processing send job ${claimedJob.id}`, error);
