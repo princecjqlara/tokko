@@ -32,7 +32,7 @@ type ContactRecord = {
 
 const MESSAGE_SEND_THROTTLE_MS = 50; // rate limit between sends (increased from 100ms for faster processing)
 const ATTACHMENT_THROTTLE_MS = 300; // give media a moment to settle (reduced from 500ms)
-const PAGE_CHUNK_SIZE = 300; // break huge pages into smaller chunks so we can checkpoint progress
+const PAGE_CHUNK_SIZE = 150; // smaller chunks mean more frequent checkpoints and less duplicate risk on restarts
 const TIMEOUT_BUFFER_MS = 15000; // stop ~15s before the Vercel limit so we can persist progress safely
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -445,6 +445,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     updated_at: new Date().toISOString(),
     errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
   };
+  const claimGuardTimestamp = sendJob.updated_at || sendJob.started_at || null;
 
   let updateResult;
   let updateError;
@@ -455,6 +456,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     .from("send_jobs")
     .update(baseUpdate)
     .eq("id", sendJob.id)
+    .eq("updated_at", claimGuardTimestamp)
     .in("status", ["pending", "failed"])
     .select()
     .maybeSingle(); // maybeSingle avoids errors when no rows are updated
@@ -465,6 +467,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       .from("send_jobs")
       .update(baseUpdate)
       .eq("id", sendJob.id)
+      .eq("updated_at", claimGuardTimestamp)
       .or(`and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
       .select()
       .maybeSingle(); // return null if nothing matched
