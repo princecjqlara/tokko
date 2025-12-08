@@ -442,6 +442,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
 
   let updateResult;
   let updateError;
+  let claimMethod = "none";
 
   // Step 1: claim if pending/failed
   const pendingClaim = await supabaseServer
@@ -463,18 +464,32 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       .maybeSingle(); // return null if nothing matched
     updateResult = staleClaim.data;
     updateError = staleClaim.error;
+    claimMethod = "stale-running/processing";
   } else {
     updateResult = pendingClaim.data;
     updateError = pendingClaim.error;
+    claimMethod = "pending/failed";
   }
 
   if (updateError || !updateResult) {
+    logEvent("Claim attempt failed", {
+      jobId: sendJob.id,
+      pendingError: pendingClaim.error?.message,
+      staleError: updateError?.message
+    });
     logEvent("Job could not be claimed", {
       jobId: sendJob.id,
       updateError: updateError?.message || "No matching job to claim"
     });
     return;
   }
+
+  logEvent("Job claimed", {
+    jobId: sendJob.id,
+    claimMethod,
+    status: updateResult.status,
+    updated_at: updateResult.updated_at
+  });
 
   // Wait a moment and verify we still own the job
   await sleep(500);
@@ -701,7 +716,12 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
 
         // Stop immediately if cancellation was requested during this chunk
         if (result.cancelled || (await isJobCancelled(sendJob.id))) {
-          console.log(`[Process Send Job] Job ${sendJob.id} cancelled during page ${pageId} chunk ${chunkNumber}, saving progress and exiting`);
+          console.log(`[Process Send Job] Job ${sendJob.id} cancelled during page ${pageId} chunk ${chunkNumber}, saving progress and exiting`, {
+            sent: messageSuccess,
+            failed: messageFailed,
+            processedInChunk: result.success + result.failed,
+            totalExpected: sendJob.total_count || deduplicatedContacts.length
+          });
           await supabaseServer
             .from("send_jobs")
             .update({
@@ -817,6 +837,13 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
           updated_at: new Date().toISOString()
         })
         .eq("id", sendJob.id);
+      logEvent("Job marked running (incomplete)", {
+        jobId: sendJob.id,
+        sent: messageSuccess,
+        failed: messageFailed,
+        remaining: remainingContacts,
+        totalExpected
+      });
     } else if (messageSuccess === 0 && messageFailed > 0 && totalProcessed >= totalExpected) {
       // All contacts processed but all failed
       finalStatus = "failed";
@@ -831,6 +858,12 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
           updated_at: new Date().toISOString()
         })
         .eq("id", sendJob.id);
+      logEvent("Job marked failed", {
+        jobId: sendJob.id,
+        sent: messageSuccess,
+        failed: messageFailed,
+        totalExpected
+      });
     } else {
       // All contacts processed successfully
       finalStatus = "completed";
