@@ -450,7 +450,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     .eq("id", sendJob.id)
     .in("status", ["pending", "failed"])
     .select()
-    .single();
+    .maybeSingle(); // maybeSingle avoids errors when no rows are updated
 
   if (pendingClaim.error || !pendingClaim.data) {
     // Step 2: claim if stale running/processing
@@ -460,7 +460,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       .eq("id", sendJob.id)
       .or(`and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
       .select()
-      .single();
+      .maybeSingle(); // return null if nothing matched
     updateResult = staleClaim.data;
     updateError = staleClaim.error;
   } else {
@@ -471,7 +471,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   if (updateError || !updateResult) {
     logEvent("Job could not be claimed", {
       jobId: sendJob.id,
-      updateError: updateError?.message
+      updateError: updateError?.message || "No matching job to claim"
     });
     return;
   }
