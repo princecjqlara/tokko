@@ -5,7 +5,7 @@ import { fetchScheduledMessages } from "./lib/fetch-scheduled";
 import { processScheduledMessage } from "./lib/process-message";
 import { ScheduledMessageRecord } from "./lib/types";
 
-export { dynamic };
+export const dynamicExport = dynamic;
 
 export async function GET(request: NextRequest) {
   try {
