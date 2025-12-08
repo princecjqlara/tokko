@@ -1,4 +1,3 @@
-import { supabaseServer } from "@/lib/supabase-server";
 import { MAX_RUNTIME_MS, PAGE_CHUNK_SIZE, TIMEOUT_BUFFER_MS } from "./constants";
 import { fetchContactsForSendJob } from "./fetch-contacts";
 import { logEvent, logError } from "./logging";
@@ -7,6 +6,7 @@ import { ContactRecord, SendJobRecord } from "./types";
 import { chunkArray, coerceContactIds, isJobCancelled } from "./utils";
 import { claimJob } from "./claim-job";
 import { finalizeJob, persistProgress } from "./persist";
+import { supabaseServer } from "@/lib/supabase-server";
 
 type ProcessParams = {
   job: SendJobRecord;
@@ -186,6 +186,21 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
       sentContactIds,
       pendingContactIds: remainingAfterAll
     });
+
+    // Clear per-contact status flags once broadcast is done
+    try {
+      const contactDbIds = deduplicatedContacts.map(c => c.id).filter(Boolean);
+      const CHUNK = 1000;
+      for (let i = 0; i < contactDbIds.length; i += CHUNK) {
+        const idsChunk = contactDbIds.slice(i, i + CHUNK);
+        await supabaseServer
+          .from("contacts")
+          .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+          .in("id", idsChunk);
+      }
+    } catch (error) {
+      logError("Failed to clear contact send status after job", error);
+    }
   } catch (error: any) {
     logError(`Error processing send job ${claimedJob.id}`, error);
     await supabaseServer

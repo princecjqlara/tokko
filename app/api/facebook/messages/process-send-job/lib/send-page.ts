@@ -4,6 +4,20 @@ import { isJobCancelled, sleep } from "./utils";
 import { MESSAGE_SEND_THROTTLE_MS } from "./constants";
 import { sendMessageToContact } from "./send-contact";
 
+async function updateContactStatus(contactId: number | null | undefined, jobId: number | undefined, status: "sent" | "failed" | null) {
+  if (!contactId) return;
+  const updates: any = {
+    last_send_status: status,
+    last_send_job_id: status ? jobId || null : null,
+    last_send_at: status ? new Date().toISOString() : null
+  };
+  try {
+    await supabaseServer.from("contacts").update(updates).eq("id", contactId);
+  } catch (error) {
+    console.warn("[Send Page] Failed to mark contact status", { contactId, status, jobId, error: (error as any)?.message });
+  }
+}
+
 type Params = {
   pageId: string;
   contacts: ContactRecord[];
@@ -116,6 +130,7 @@ export async function sendMessagesForPage(params: Params): Promise<PageSendResul
 
     if (sendResult.success) {
       success++;
+      await updateContactStatus(contact.id, jobId, "sent");
     } else {
       failed++;
       const errorMsg = sendResult.error || "Unknown error";
@@ -124,6 +139,7 @@ export async function sendMessagesForPage(params: Params): Promise<PageSendResul
         page: contact.page_name,
         error: errorMsg
       });
+      await updateContactStatus(contact.id, jobId, "failed");
       if (!errorMsg.includes("DUPLICATE") && !errorMsg.includes("already sent")) {
         localSentIds.delete(contact.contact_id);
         if (sentContactIds) sentContactIds.delete(contact.contact_id);
