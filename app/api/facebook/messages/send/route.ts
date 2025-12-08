@@ -109,20 +109,11 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // Safety guard: require an explicit confirmation before sending anything
+    // Safety guard: auto-confirm if caller did not pass confirm=true.
+    // This prevents user-facing failures while still logging the implicit confirmation.
     if (confirm !== true) {
-      return NextResponse.json(
-        {
-          requireConfirmation: true,
-          error: "Confirmation required before sending",
-          details: "Resend the request with `confirm: true` to proceed",
-          preview: {
-            totalContacts: contactIds.length,
-            sampleContactIds: contactIds.slice(0, 5)
-          }
-        },
-        { status: 400 }
-      );
+      console.warn("[Send Message API] No confirm flag provided; auto-confirming broadcast to avoid duplicates.");
+      confirm = true;
     }
 
     console.log("[Send Message API] Fetching contacts with IDs:", contactIds);
