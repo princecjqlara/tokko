@@ -57,5 +57,11 @@ export async function fetchContactsForScheduledMessage(userId: string, contactId
     throw new Error("No contacts found for scheduled message");
   }
 
-  return contacts;
+  const filtered = contacts.filter(c => c.last_send_status !== "sent");
+  const skipped = contacts.length - filtered.length;
+  if (skipped > 0) {
+    console.warn(`[Process Scheduled] Skipped ${skipped} contact(s) already marked sent`);
+  }
+
+  return filtered;
 }

@@ -86,8 +86,15 @@ export async function fetchContactsForSend(userId: string, contactIds: (string |
     }
   }
 
+  const merged = Array.from(uniqueContacts.values());
+  const filtered = merged.filter(c => c.last_send_status !== "sent");
+  const skipped = merged.length - filtered.length;
+  if (skipped > 0) {
+    console.warn(`[Send Message API] Skipped ${skipped} contact(s) already marked sent`);
+  }
+
   return {
-    contacts: Array.from(uniqueContacts.values()),
+    contacts: filtered,
     contactsError
   };
 }
