@@ -51,6 +51,34 @@ export async function GET(request: NextRequest) {
       total_count: job.total_count
     });
 
+    // Kick the job processor if the job is pending/running but looks idle/stuck
+    try {
+      const updatedAt = job.updated_at ? new Date(job.updated_at).getTime() : 0;
+      const now = Date.now();
+      const idleMs = now - updatedAt;
+      const shouldKick = ["pending", "running", "processing"].includes(job.status) && idleMs > 30000; // 30s idle
+
+      if (shouldKick) {
+        const triggerUrl = new URL(request.url);
+        triggerUrl.pathname = "/api/facebook/messages/process-send-job";
+
+        fetch(triggerUrl.toString(), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ jobId }),
+          signal: AbortSignal.timeout(5000)
+        }).then(res => {
+          if (!res.ok) {
+            console.warn(`[Send Job Status] Kick trigger returned ${res.status} for job ${jobId}`);
+          }
+        }).catch(err => {
+          console.warn(`[Send Job Status] Kick trigger failed for job ${jobId}: ${err.message}`);
+        });
+      }
+    } catch (kickError) {
+      console.warn(`[Send Job Status] Kick trigger error for job ${jobId}:`, kickError);
+    }
+
     return NextResponse.json({
       success: true,
       job: {
