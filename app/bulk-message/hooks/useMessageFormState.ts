@@ -4,7 +4,7 @@ export function useMessageFormState() {
   const [message, setMessage] = useState("");
   const [scheduleDate, setScheduleDate] = useState("");
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const clearAttachment = () => {
     setAttachedFile(null);
