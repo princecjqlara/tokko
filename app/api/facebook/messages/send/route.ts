@@ -9,7 +9,8 @@ export const maxDuration = 300; // 5 minutes max duration (requires Vercel Pro p
 export const dynamic = "force-dynamic";
 
 // Threshold for using background jobs (to avoid timeout)
-const BACKGROUND_JOB_THRESHOLD = 100;
+// Default to 0 so ALL sends go through background jobs unless explicitly overridden
+const BACKGROUND_JOB_THRESHOLD = Number(process.env.BACKGROUND_JOB_THRESHOLD ?? "0");
 
 // For extremely large sends, skip the expensive prefetch step and go straight to a background job
 // This avoids timeouts when contactIds is in the tens of thousands.
