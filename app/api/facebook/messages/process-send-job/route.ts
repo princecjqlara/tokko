@@ -320,6 +320,12 @@ async function sendMessagesForPage(
   for (let i = 0; i < contacts.length; i++) {
     const contact = contacts[i];
 
+    // Skip if already sent in a previous chunk or resume (defensive against restarts)
+    if (localSentIds.has(contact.contact_id)) {
+      console.log(`[sendMessagesForPage] Skipping already-sent contact ${contact.contact_id} (${contact.contact_name})`);
+      continue;
+    }
+
     // Periodically check if the user cancelled the job to stop mid-chunk
     if (jobId !== undefined && i % 10 === 0) {
       const cancelled = await isJobCancelled(jobId);
