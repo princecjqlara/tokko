@@ -54,6 +54,22 @@ const logError = (event: string, error: any, details?: Record<string, any>) => {
   console.error(`[Process Send Job] ${event}`, JSON.stringify(payload));
 };
 
+// Lightweight helper to detect user-triggered cancellation without duplicating query code
+async function isJobCancelled(jobId: number): Promise<boolean> {
+  try {
+    const { data: job } = await supabaseServer
+      .from("send_jobs")
+      .select("status")
+      .eq("id", jobId)
+      .single();
+
+    return job?.status === "cancelled";
+  } catch (error) {
+    console.error(`[Process Send Job] Error checking cancellation for job ${jobId}:`, error);
+    return false;
+  }
+}
+
 function chunkArray<T>(items: T[], chunkSize: number): T[][] {
   if (chunkSize <= 0) return [items];
   const chunks: T[][] = [];
@@ -224,7 +240,15 @@ async function sendMessageToContact(pageAccessToken: string, contact: ContactRec
   };
 }
 
-async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], message: string, attachment: any, userAccessToken: string | null, sentContactIds?: Set<string>) {
+async function sendMessagesForPage(
+  pageId: string,
+  contacts: ContactRecord[],
+  message: string,
+  attachment: any,
+  userAccessToken: string | null,
+  sentContactIds?: Set<string>,
+  jobId?: number
+) {
   const { data: pageData, error: pageError } = await supabaseServer
     .from("facebook_pages")
     .select("page_id, page_access_token, page_name")
@@ -264,7 +288,7 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
 
             if (!retryResult.error && retryResult.data) {
               // Pass sentContactIds to prevent duplicates on retry
-              return await sendMessagesForPage(pageId, contacts, message, attachment, userAccessToken, sentContactIds);
+              return await sendMessagesForPage(pageId, contacts, message, attachment, userAccessToken, sentContactIds, jobId);
             }
           }
         }
@@ -293,7 +317,18 @@ async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], me
   // Use the provided Set or create a new one
   const localSentIds = sentContactIds || new Set<string>();
 
-  for (const contact of contacts) {
+  for (let i = 0; i < contacts.length; i++) {
+    const contact = contacts[i];
+
+    // Periodically check if the user cancelled the job to stop mid-chunk
+    if (jobId !== undefined && i % 10 === 0) {
+      const cancelled = await isJobCancelled(jobId);
+      if (cancelled) {
+        console.log(`[sendMessagesForPage] Job ${jobId} cancelled while processing page ${pageId}, stopping after ${i} contact(s) in this chunk`);
+        return { success, failed, errors, cancelled: true };
+      }
+    }
+
     // CRITICAL: Skip if we've already sent to this contact in this job run
     // Check BEFORE marking to prevent race conditions
     if (localSentIds.has(contact.contact_id)) {
@@ -611,6 +646,12 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
         const chunkNumber = chunkIndex + 1;
         const chunk = pageChunks[chunkIndex];
 
+        // If user cancelled while previous chunk was running, stop before doing more work
+        if (await isJobCancelled(sendJob.id)) {
+          console.log(`[Process Send Job] Job ${sendJob.id} cancelled before processing page ${pageId} chunk ${chunkNumber}, stopping early`);
+          return;
+        }
+
         if (elapsed > VERCEL_TIMEOUT - TIMEOUT_BUFFER_MS) {
           const sentContactIdsArray = Array.from(sentContactIds);
           const actualErrors = messageErrors.filter((e: any) => !e._metadata);
@@ -650,12 +691,28 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
           sendJob.message,
           sendJob.attachment,
           userAccessToken,
-          sentContactIds // Pass sent tracking to prevent duplicates
+          sentContactIds, // Pass sent tracking to prevent duplicates
+          sendJob.id
         );
 
         messageSuccess += result.success;
         messageFailed += result.failed;
         messageErrors.push(...result.errors);
+
+        // Stop immediately if cancellation was requested during this chunk
+        if (result.cancelled || (await isJobCancelled(sendJob.id))) {
+          console.log(`[Process Send Job] Job ${sendJob.id} cancelled during page ${pageId} chunk ${chunkNumber}, saving progress and exiting`);
+          await supabaseServer
+            .from("send_jobs")
+            .update({
+              status: "cancelled",
+              sent_count: messageSuccess,
+              failed_count: messageFailed,
+              updated_at: new Date().toISOString()
+            })
+            .eq("id", sendJob.id);
+          return;
+        }
 
         // Update progress after each chunk (important for resume on huge pages)
         const sentContactIdsArray = Array.from(sentContactIds);
@@ -721,6 +778,12 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       messageSuccess,
       messageFailed
     });
+
+    // Respect late cancellation signals before writing final status
+    if (await isJobCancelled(sendJob.id)) {
+      console.log(`[Process Send Job] Job ${sendJob.id} was cancelled before final status update, leaving status as cancelled`);
+      return;
+    }
 
     // If we have no more contacts to process, mark as complete
     // This handles the case where all remaining contacts were already sent in previous runs

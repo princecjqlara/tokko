@@ -72,3 +72,4 @@ CREATE TRIGGER update_send_jobs_updated_at_trigger
     FOR EACH ROW
     EXECUTE FUNCTION update_send_jobs_updated_at();
 
+

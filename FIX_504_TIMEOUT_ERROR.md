@@ -114,3 +114,4 @@ supabase migration up
 3. Add job cancellation capability
 4. Add email/notification when job completes
 
+
