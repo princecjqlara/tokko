@@ -437,8 +437,8 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   }
 
   // CRITICAL: Skip only very fresh running/processing jobs to prevent duplicate processors.
-  // Tighten the stale window so stuck jobs are reclaimed faster.
-  const STALE_THRESHOLD_SECONDS = 30;
+  // Use a slightly longer stale window so rapid double-triggers don't pick up the same job.
+  const STALE_THRESHOLD_SECONDS = 90;
   const lastUpdated = new Date(sendJob.updated_at || sendJob.started_at || new Date().toISOString());
   const secondsSinceLastUpdate = (Date.now() - lastUpdated.getTime()) / 1000;
 
@@ -451,7 +451,9 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     return;
   }
 
-  // Simple claim: force set to running for this id (relies on the fresh-skip guard above to avoid rapid double-processing)
+  // Simple claim with optimistic concurrency guard: only succeed if the row hasn't changed since we fetched it
+  const previousUpdatedAt = sendJob.updated_at || sendJob.started_at || new Date(0).toISOString();
+  const claimableStatuses = ["pending", "running", "processing", "failed"];
   const claim = await supabaseServer
     .from("send_jobs")
     .update({
@@ -459,13 +461,17 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       updated_at: new Date().toISOString()
     })
     .eq("id", sendJob.id)
+    .eq("updated_at", previousUpdatedAt) // ensures only one processor can claim based on the last known update
+    .in("status", claimableStatuses)
     .select()
     .maybeSingle();
 
   if (claim.error || !claim.data) {
-    logEvent("Job could not be claimed", {
+    logEvent("Job claim skipped (likely already claimed by another processor)", {
       jobId: sendJob.id,
-      updateError: claim.error?.message || "No matching job to claim"
+      previousStatus: sendJob.status,
+      previousUpdatedAt,
+      claimError: claim.error?.message || null
     });
     return;
   }
