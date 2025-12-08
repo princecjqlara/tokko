@@ -7,7 +7,8 @@ import { logEvent, logError } from "./lib/logging";
 import { processSendJob } from "./lib/process";
 import { SendJobRecord } from "./lib/types";
 
-export { dynamic, maxDuration };
+export const dynamicExport = dynamic;
+export { maxDuration };
 
 export async function POST(request: NextRequest) {
   try {
