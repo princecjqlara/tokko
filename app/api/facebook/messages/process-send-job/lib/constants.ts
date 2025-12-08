@@ -1,6 +1,3 @@
-export const dynamic = "force-dynamic";
-export const maxDuration = 300; // 5 minutes
-
 export const MESSAGE_SEND_THROTTLE_MS = 50;
 export const ATTACHMENT_THROTTLE_MS = 300;
 

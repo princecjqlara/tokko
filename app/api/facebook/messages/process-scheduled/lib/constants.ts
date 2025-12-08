@@ -1,5 +1,3 @@
-export const dynamic = "force-dynamic";
-
 export const MAX_MESSAGES_PER_RUN = 10;
 export const CONTACT_FETCH_CHUNK = 200;
 export const MESSAGE_SEND_THROTTLE_MS = 120;

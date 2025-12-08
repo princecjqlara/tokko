@@ -5,7 +5,7 @@ type MessageProps = {
   setScheduleDate: (v: string) => void;
   attachedFile: File | null;
   setAttachedFile: (f: File | null) => void;
-  fileInputRef: React.RefObject<HTMLInputElement>;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
   onSend: () => void;
   onCancelSend: () => void;
   isUploadingFile: boolean;

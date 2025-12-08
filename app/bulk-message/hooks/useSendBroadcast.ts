@@ -44,7 +44,7 @@ export function useSendBroadcast({ onStart, onFinish, onSuccess, onBackground, o
     setSelectedContactIds: (v: (string | number)[]) => void;
     setScheduleDate: (v: string) => void;
     setAttachedFile: (v: File | null) => void;
-    fileInputRef: React.RefObject<HTMLInputElement>;
+    fileInputRef: React.RefObject<HTMLInputElement | null>;
   }) => {
     const { selectedContactIds, message, scheduleDate, attachedFile, setMessage, setSelectedContactIds, setScheduleDate, setAttachedFile, fileInputRef } = params;
     if (!message.trim()) return onError?.("Please enter a message");
