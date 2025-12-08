@@ -2,9 +2,10 @@
 export const MESSAGE_SEND_THROTTLE_MS = Number(process.env.CONTACT_SEND_THROTTLE_MS || "1000");
 export const ATTACHMENT_THROTTLE_MS = 300;
 
-const DEFAULT_PAGE_CHUNK_SIZE = 150;
+// Process contacts one-by-one to persist progress frequently and avoid duplicate re-sends
+const DEFAULT_PAGE_CHUNK_SIZE = 1;
 export const PAGE_CHUNK_SIZE = Math.max(
-  25,
+  1,
   Number(process.env.SEND_JOB_PAGE_CHUNK_SIZE || DEFAULT_PAGE_CHUNK_SIZE)
 );
 
