@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    let { contactIds, message, scheduleDate, attachment } = body;
+    let { contactIds, message, scheduleDate, attachment, confirm } = body;
 
     // CRITICAL: Deduplicate contactIds BEFORE processing to prevent duplicate sends
     // Remove duplicates from contactIds array to ensure each contact is only processed once
@@ -105,6 +105,22 @@ export async function POST(request: NextRequest) {
     if (!message || message.trim().length === 0) {
       return NextResponse.json(
         { error: "Message is required" },
+        { status: 400 }
+      );
+    }
+
+    // Safety guard: require an explicit confirmation before sending anything
+    if (confirm !== true) {
+      return NextResponse.json(
+        {
+          requireConfirmation: true,
+          error: "Confirmation required before sending",
+          details: "Resend the request with `confirm: true` to proceed",
+          preview: {
+            totalContacts: contactIds.length,
+            sampleContactIds: contactIds.slice(0, 5)
+          }
+        },
         { status: 400 }
       );
     }
