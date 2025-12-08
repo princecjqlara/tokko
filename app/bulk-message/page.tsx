@@ -1828,30 +1828,7 @@ export default function BulkMessagePage() {
             sendAbortControllerRef.current = null;
         }
 
-        // Cancel background job if running
-        if (sendJobProgress && sendJobProgress.jobId) {
-            console.log(`[Frontend] Cancelling background job ${sendJobProgress.jobId}...`);
-            try {
-                const response = await fetch("/api/facebook/messages/cancel-job", {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({ jobId: sendJobProgress.jobId }),
-                });
 
-                if (response.ok) {
-                    const data = await response.json();
-                    console.log("[Frontend] Background job cancelled successfully:", data);
-                    setSendJobProgress(prev => prev ? { ...prev, status: "cancelled" } : null);
-                } else {
-                    const errorData = await response.json();
-                    console.error("[Frontend] Failed to cancel background job:", errorData);
-                }
-            } catch (error) {
-                console.error("[Frontend] Error cancelling background job:", error);
-            }
-        }
 
         // Reset sending state
         isSendingRef.current = false;
@@ -2412,118 +2389,7 @@ export default function BulkMessagePage() {
                     </div>
                 )}
 
-                {sendJobProgress && (
-                    <div className="mb-6 rounded-xl border border-zinc-700/50 bg-zinc-900/40 backdrop-blur-sm px-5 py-4">
-                        {/* Header with status and close button */}
-                        <div className="flex items-center justify-between mb-4">
-                            <div className="flex items-center gap-3">
-                                <div className="text-sm font-semibold text-white">
-                                    {sendJobProgress.status === "completed" ? "✅ Sending complete" :
-                                        sendJobProgress.status === "cancelled" ? "🚫 Sending cancelled" :
-                                            sendJobProgress.status === "failed" ? "❌ Sending failed" :
-                                                sendJobProgress.status === "running" ? "📤 Sending messages..." :
-                                                    sendJobProgress.status === "processing" ? "📤 Sending messages..." :
-                                                        "⏳ Queued for sending"}
-                                </div>
-                            </div>
-                            <button
-                                onClick={() => {
-                                    setSendJobProgress(null);
-                                    if (session?.user?.id) {
-                                        localStorage.removeItem(`sendJobProgress_${session.user.id}`);
-                                    }
-                                }}
-                                className="text-zinc-400 hover:text-white transition"
-                            >
-                                <XIcon size={18} />
-                            </button>
-                        </div>
 
-                        {/* Progress info and bar */}
-                        <div className="mb-4">
-                            <div className="flex items-center justify-between text-sm mb-2">
-                                <span className="text-zinc-300">
-                                    {sendJobProgress.sent + sendJobProgress.failed} of {sendJobProgress.total} processed
-                                </span>
-                                <span className="text-zinc-400">
-                                    {sendJobProgress.total > 0 ? Math.round(((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100) : 0}%
-                                </span>
-                            </div>
-                            <div className="w-full bg-zinc-800 rounded-full h-2 overflow-hidden">
-                                <div
-                                    className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300 rounded-full"
-                                    style={{
-                                        width: `${sendJobProgress.total > 0 ? ((sendJobProgress.sent + sendJobProgress.failed) / sendJobProgress.total) * 100 : 0}%`
-                                    }}
-                                />
-                            </div>
-                        </div>
-
-                        {/* Stats */}
-                        <div className="grid grid-cols-3 gap-3 mb-4">
-                            <div className="bg-zinc-800/50 rounded-lg px-3 py-2">
-                                <div className="text-xs text-zinc-500">Total</div>
-                                <div className="text-lg font-bold text-white">{sendJobProgress.total}</div>
-                            </div>
-                            <div className="bg-zinc-800/50 rounded-lg px-3 py-2">
-                                <div className="text-xs text-zinc-500">Sent</div>
-                                <div className="text-lg font-bold text-green-400">{sendJobProgress.sent}</div>
-                            </div>
-                            <div className="bg-zinc-800/50 rounded-lg px-3 py-2">
-                                <div className="text-xs text-zinc-500">Failed</div>
-                                <div className="text-lg font-bold text-red-400">{sendJobProgress.failed}</div>
-                            </div>
-                        </div>
-
-                        {/* Status message and cancel button */}
-                        {(sendJobProgress.status === "running" || sendJobProgress.status === "processing" || sendJobProgress.status === "pending") && (
-                            <div className="flex items-center justify-between pt-3 border-t border-zinc-700/50">
-                                <div className="text-xs text-zinc-400 italic">
-                                    Processing messages in the background. This page will update automatically.
-                                </div>
-                                <button
-                                    onClick={async () => {
-                                        if (confirm('Are you sure you want to cancel this send job?')) {
-                                            try {
-                                                // TODO: Implement cancel job API endpoint
-                                                const response = await fetch(`/api/facebook/messages/cancel-job`, {
-                                                    method: 'POST',
-                                                    headers: { 'Content-Type': 'application/json' },
-                                                    body: JSON.stringify({ jobId: sendJobProgress.jobId })
-                                                });
-
-                                                if (response.ok) {
-                                                    setSendJobProgress(null);
-                                                    if (session?.user?.id) {
-                                                        localStorage.removeItem(`sendJobProgress_${session.user.id}`);
-                                                    }
-                                                    alert('Send job canceled successfully');
-                                                } else {
-                                                    alert('Failed to cancel send job');
-                                                }
-                                            } catch (error) {
-                                                console.error('Error canceling job:', error);
-                                                alert('Error canceling send job');
-                                            }
-                                        }
-                                    }}
-                                    className="flex items-center gap-2 rounded-lg bg-red-600 hover:bg-red-700 px-4 py-2 text-xs font-semibold text-white transition"
-                                >
-                                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-                                    </svg>
-                                    Cancel
-                                </button>
-                            </div>
-                        )}
-
-                        {sendJobProgress.status === "completed" && sendJobProgress.completedAt && (
-                            <div className="pt-3 border-t border-zinc-700/50 text-xs text-zinc-400">
-                                Completed at {new Date(sendJobProgress.completedAt).toLocaleString()}
-                            </div>
-                        )}
-                    </div>
-                )}
 
                 {/* Controls Grid */}
                 <div className="mb-8 grid gap-4 md:grid-cols-[1.5fr_1fr_1fr]">
