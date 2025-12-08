@@ -451,8 +451,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     return;
   }
 
-  // Simple claim: grab pending/failed or stale running/processing (>30s)
-  const staleCutoffIso = new Date(Date.now() - 30 * 1000).toISOString();
+  // Simple claim: force set to running for this id (relies on the fresh-skip guard above to avoid rapid double-processing)
   const claim = await supabaseServer
     .from("send_jobs")
     .update({
@@ -460,7 +459,6 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       updated_at: new Date().toISOString()
     })
     .eq("id", sendJob.id)
-    .or(`status.eq.pending,status.eq.failed,and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
     .select()
     .maybeSingle();
 
