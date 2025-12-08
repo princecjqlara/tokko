@@ -57,6 +57,7 @@ export async function GET(request: NextRequest) {
       const now = Date.now();
       const idleMs = now - updatedAt;
       const shouldKick = ["pending", "running", "processing"].includes(job.status) && idleMs > 30000; // 30s idle
+      const sessionAccessToken = (session as any)?.accessToken || null;
 
       if (shouldKick) {
         const triggerUrl = new URL(request.url);
@@ -65,7 +66,7 @@ export async function GET(request: NextRequest) {
         fetch(triggerUrl.toString(), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ jobId }),
+          body: JSON.stringify({ jobId, accessToken: sessionAccessToken }),
           signal: AbortSignal.timeout(5000)
         }).then(res => {
           if (!res.ok) {
