@@ -2,6 +2,23 @@ import { supabaseServer } from "@/lib/supabase-server";
 import { SendJobRecord } from "./types";
 import { isJobCancelled } from "./utils";
 
+const ACTIVE_JOB_STATUSES = ["pending", "running", "processing"];
+
+async function hasOtherActiveJobs(userId: string, excludeJobId?: number) {
+  const query = supabaseServer
+    .from("send_jobs")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .in("status", ACTIVE_JOB_STATUSES);
+  if (excludeJobId !== undefined) query.neq("id", excludeJobId);
+  const { count, error } = await query;
+  if (error) {
+    console.warn("[Send Job] Active job check failed", error.message);
+    return true; // assume active to be safe
+  }
+  return (count || 0) > 0;
+}
+
 type ProgressParams = {
   job: SendJobRecord;
   status: string;
@@ -76,13 +93,16 @@ export async function persistProgress(params: ProgressParams) {
 
   // Clear per-contact status if the job was cancelled or timed out
   if (clearStatusIds && clearStatusIds.length > 0 && (status === "cancelled" || timeout)) {
-    const CHUNK = 500;
-    for (let i = 0; i < clearStatusIds.length; i += CHUNK) {
-      const chunk = clearStatusIds.slice(i, i + CHUNK);
-      await supabaseServer
-        .from("contacts")
-        .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
-        .in("id", chunk);
+    const active = await hasOtherActiveJobs(job.user_id, job.id);
+    if (!active) {
+      const CHUNK = 500;
+      for (let i = 0; i < clearStatusIds.length; i += CHUNK) {
+        const chunk = clearStatusIds.slice(i, i + CHUNK);
+        await supabaseServer
+          .from("contacts")
+          .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+          .in("id", chunk);
+      }
     }
   }
 }
@@ -139,13 +159,16 @@ export async function finalizeJob(params: FinalizeParams) {
 
   // Clear per-contact status when the job is done (completed or running with remaining)
   if (clearStatusIds && clearStatusIds.length > 0) {
-    const CHUNK = 500;
-    for (let i = 0; i < clearStatusIds.length; i += CHUNK) {
-      const chunk = clearStatusIds.slice(i, i + CHUNK);
-      await supabaseServer
-        .from("contacts")
-        .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
-        .in("id", chunk);
+    const active = await hasOtherActiveJobs(job.user_id, job.id);
+    if (!active) {
+      const CHUNK = 500;
+      for (let i = 0; i < clearStatusIds.length; i += CHUNK) {
+        const chunk = clearStatusIds.slice(i, i + CHUNK);
+        await supabaseServer
+          .from("contacts")
+          .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+          .in("id", chunk);
+      }
     }
   }
 }

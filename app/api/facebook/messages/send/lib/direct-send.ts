@@ -3,6 +3,7 @@ import { ContactRecord } from "./contacts";
 import { CONTACT_SEND_THROTTLE_MS, VERCEL_SEND_TIMEOUT_MS } from "./constants";
 
 type DirectSendParams = {
+  userId: string;
   contacts: ContactRecord[];
   message: string;
   attachment: any;
@@ -182,15 +183,23 @@ export async function sendDirectMessages(params: DirectSendParams) {
     }
   }
 
-  // Clear markers after the broadcast finishes
+  // Clear markers only if no background jobs are active for this user
   try {
-    const CHUNK = 500;
-    for (let i = 0; i < processedContactIds.length; i += CHUNK) {
-      const chunk = processedContactIds.slice(i, i + CHUNK);
-      await supabaseServer
-        .from("contacts")
-        .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
-        .in("id", chunk);
+    const { count, error } = await supabaseServer
+      .from("send_jobs")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", params.userId)
+      .in("status", ["pending", "running", "processing"]);
+    const hasActiveJob = error ? true : (count || 0) > 0;
+    if (!hasActiveJob) {
+      const CHUNK = 500;
+      for (let i = 0; i < processedContactIds.length; i += CHUNK) {
+        const chunk = processedContactIds.slice(i, i + CHUNK);
+        await supabaseServer
+          .from("contacts")
+          .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+          .in("id", chunk);
+      }
     }
   } catch (error) {
     console.warn("[Send Message API] Failed to clear contact send status after direct send:", (error as any)?.message);

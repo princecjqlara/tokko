@@ -3,6 +3,20 @@ import { ContactRecord, ProcessResult, ScheduledMessageRecord } from "./types";
 import { fetchContactsForScheduledMessage } from "./fetch-contacts";
 import { sendMessagesForPage } from "./send-page";
 import { coerceContactIds } from "./utils";
+import { ACTIVE_JOB_STATUSES } from "../../send/lib/constants";
+
+async function hasActiveSendJobs(userId: string) {
+  const { count, error } = await supabaseServer
+    .from("send_jobs")
+    .select("id", { count: "exact", head: true })
+    .eq("user_id", userId)
+    .in("status", ACTIVE_JOB_STATUSES);
+  if (error) {
+    console.warn("[Process Scheduled] Active job check failed", error.message);
+    return true;
+  }
+  return (count || 0) > 0;
+}
 
 export async function processScheduledMessage(scheduledMessage: ScheduledMessageRecord): Promise<ProcessResult> {
   const messageTag = scheduledMessage.attachment?._meta?.messageTag || "ACCOUNT_UPDATE";
@@ -53,19 +67,22 @@ export async function processScheduledMessage(scheduledMessage: ScheduledMessage
       })
       .eq("id", scheduledMessage.id);
 
-    // Clear contact send markers after scheduled run
-    try {
-      const contactDbIds = deduplicatedContacts.map(c => c.id).filter(Boolean);
-      const CHUNK = 1000;
-      for (let i = 0; i < contactDbIds.length; i += CHUNK) {
-        const idsChunk = contactDbIds.slice(i, i + CHUNK);
-        await supabaseServer
-          .from("contacts")
-          .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
-          .in("id", idsChunk);
+    // Clear contact send markers only if no active background send jobs
+    const activeJobs = await hasActiveSendJobs(scheduledMessage.user_id);
+    if (!activeJobs) {
+      try {
+        const contactDbIds = deduplicatedContacts.map(c => c.id).filter(Boolean);
+        const CHUNK = 1000;
+        for (let i = 0; i < contactDbIds.length; i += CHUNK) {
+          const idsChunk = contactDbIds.slice(i, i + CHUNK);
+          await supabaseServer
+            .from("contacts")
+            .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+            .in("id", idsChunk);
+        }
+      } catch (error) {
+        console.warn("[Process Scheduled] Failed to clear contact send status:", (error as any)?.message);
       }
-    } catch (error) {
-      console.warn("[Process Scheduled] Failed to clear contact send status:", (error as any)?.message);
     }
 
     return {

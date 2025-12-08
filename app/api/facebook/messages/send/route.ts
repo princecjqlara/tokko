@@ -131,7 +131,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Scheduling is currently disabled." }, { status: 400 });
     }
 
-    const directResults = await sendDirectMessages({ contacts, message, attachment, messageTag: safeMessageTag });
+    const directResults = await sendDirectMessages({ userId, contacts, message, attachment, messageTag: safeMessageTag });
 
     return NextResponse.json({
       success: true,
