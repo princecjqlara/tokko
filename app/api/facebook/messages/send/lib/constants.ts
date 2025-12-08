@@ -1,8 +1,8 @@
 export const MAX_DURATION = 300; // 5 minutes (requires Vercel Pro)
 export const DYNAMIC = "force-dynamic";
 
-// Threshold for using background jobs (avoid timeouts)
-export const BACKGROUND_JOB_THRESHOLD = Number(process.env.BACKGROUND_JOB_THRESHOLD ?? "0");
+// Threshold for using background jobs (avoid timeouts). Default to 100 so small batches send immediately.
+export const BACKGROUND_JOB_THRESHOLD = Number(process.env.BACKGROUND_JOB_THRESHOLD ?? "100");
 
 // Very large sends skip prefetch and go straight to a background job
 export const LARGE_SEND_FAST_PATH_THRESHOLD = Number(process.env.LARGE_SEND_FAST_PATH_THRESHOLD || "5000");
