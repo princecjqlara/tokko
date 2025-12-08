@@ -569,6 +569,28 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     }
     const deduplicatedContacts = Array.from(uniqueContacts.values());
 
+    // Normalize total_count to the actual deduped count so we don't wait for missing contacts
+    const effectiveTotal = deduplicatedContacts.length;
+    if ((sendJob.total_count || 0) !== effectiveTotal) {
+      logEvent("Adjusting job total_count to deduped count", {
+        jobId: sendJob.id,
+        previousTotal: sendJob.total_count,
+        dedupedTotal: effectiveTotal,
+        requestedIds: contactIds.length
+      });
+      try {
+        await supabaseServer
+          .from("send_jobs")
+          .update({
+            total_count: effectiveTotal,
+            updated_at: new Date().toISOString()
+          })
+          .eq("id", sendJob.id);
+      } catch (adjustError: any) {
+        console.error(`[Process Send Job] Failed to adjust total_count for job ${sendJob.id}:`, adjustError?.message || adjustError);
+      }
+    }
+
     if (deduplicatedContacts.length !== contacts.length) {
       console.warn(`[Process Send Job] ⚠️ Removed ${contacts.length - deduplicatedContacts.length} duplicate contacts (${contacts.length} -> ${deduplicatedContacts.length} unique)`);
     }
@@ -782,8 +804,8 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     // Final status update
     // Check if we processed all contacts
     const totalProcessed = messageSuccess + messageFailed;
-    // totalExpected should be the original total_count from the job
-    const totalExpected = sendJob.total_count || deduplicatedContacts.length;
+    // totalExpected aligns to deduped count (we normalized total_count earlier if it differed)
+    const totalExpected = effectiveTotal || deduplicatedContacts.length;
     // Remaining contacts to process = total expected - already processed before this run - newly processed in this run
     const remainingContacts = totalExpected - totalProcessed;
 
