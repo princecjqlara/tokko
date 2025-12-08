@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
-import { dynamic, MAX_MESSAGES_PER_RUN } from "./lib/constants";
+import { MAX_MESSAGES_PER_RUN } from "./lib/constants";
 import { authorizeCronRequest, isVercelCronRequest } from "./lib/auth";
 import { fetchScheduledMessages } from "./lib/fetch-scheduled";
 import { processScheduledMessage } from "./lib/process-message";
 import { ScheduledMessageRecord } from "./lib/types";
 
-export const dynamicExport = dynamic;
+export const dynamic = "force-dynamic";
 
 export async function GET(request: NextRequest) {
   try {

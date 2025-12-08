@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import { supabaseServer } from "@/lib/supabase-server";
-import { dynamic, maxDuration, MAX_JOBS_PER_RUN } from "./lib/constants";
+import { maxDuration, MAX_JOBS_PER_RUN } from "./lib/constants";
 import { logEvent, logError } from "./lib/logging";
 import { processSendJob } from "./lib/process";
 import { SendJobRecord } from "./lib/types";
 
-export const dynamicExport = dynamic;
+export const dynamic = "force-dynamic";
 export { maxDuration };
 
 export async function POST(request: NextRequest) {
