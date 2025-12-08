@@ -140,87 +140,6 @@ export default function BulkMessagePage() {
     const [scheduledNotice, setScheduledNotice] = useState<{ id: number; scheduledFor: string; total: number } | null>(null);
     const [isCancellingSchedule, setIsCancellingSchedule] = useState(false);
 
-    // Send job progress tracking
-    const [sendJobProgress, setSendJobProgress] = useState<{
-        jobId: number;
-        status: string;
-        sent: number;
-        failed: number;
-        total: number;
-        errors: any[];
-        startedAt?: string;
-        completedAt?: string;
-    } | null>(null);
-
-    // Restore job progress from localStorage on mount
-    useEffect(() => {
-        if (isClient && session?.user?.id) {
-            const stored = localStorage.getItem(`sendJobProgress_${session.user.id}`);
-            if (stored) {
-                try {
-                    const parsed = JSON.parse(stored);
-                    // Only restore if job is still active (not completed/failed)
-                    if (parsed && parsed.jobId && parsed.status &&
-                        parsed.status !== "completed" && parsed.status !== "failed") {
-                        setSendJobProgress(parsed);
-                    } else {
-                        // Clean up completed jobs
-                        localStorage.removeItem(`sendJobProgress_${session.user.id}`);
-                    }
-                } catch (e) {
-                    console.error("Error restoring job progress:", e);
-                }
-            }
-        }
-    }, [isClient, session?.user?.id]);
-
-    // Save job progress to localStorage whenever it changes
-    useEffect(() => {
-        if (isClient && sendJobProgress && session?.user?.id) {
-            localStorage.setItem(`sendJobProgress_${session.user.id}`, JSON.stringify(sendJobProgress));
-        } else if (isClient && !sendJobProgress && session?.user?.id) {
-            // Clear when job is dismissed
-            localStorage.removeItem(`sendJobProgress_${session.user.id}`);
-        }
-    }, [sendJobProgress, isClient, session?.user?.id]);
-
-    // Poll job status when a job is active
-    useEffect(() => {
-        if (!sendJobProgress || sendJobProgress.status === "completed" || sendJobProgress.status === "failed" || sendJobProgress.status === "cancelled") {
-            return;
-        }
-
-        const pollInterval = setInterval(async () => {
-            try {
-                const response = await fetch(`/api/facebook/messages/send-job-status?jobId=${sendJobProgress.jobId}`);
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.success && data.job) {
-                        const updated = {
-                            jobId: data.job.id,
-                            status: data.job.status,
-                            sent: data.job.sent_count || 0,
-                            failed: data.job.failed_count || 0,
-                            total: data.job.total_count || sendJobProgress.total,
-                            errors: data.job.errors || [],
-                            startedAt: data.job.started_at,
-                            completedAt: data.job.completed_at
-                        };
-                        setSendJobProgress(updated);
-
-                        // Stop polling if job is complete or cancelled
-                        if (data.job.status === "completed" || data.job.status === "failed" || data.job.status === "cancelled") {
-                            clearInterval(pollInterval);
-                        }
-                    }
-                }
-            } catch (error) {
-                console.error("Error polling job status:", error);
-            }
-        }, 3000); // Poll every 3 seconds
-
-        return () => clearInterval(pollInterval);
-    }, [sendJobProgress?.jobId, sendJobProgress?.status]);
 
     // Real-time fetching state
     const [fetchingProgress, setFetchingProgress] = useState<{
@@ -2175,15 +2094,8 @@ export default function BulkMessagePage() {
                         total: data.results.total || selectedContactIds.length || 0
                     });
                 } else if (data.results?.backgroundJob) {
-                    // Large batch is being processed in background - start tracking progress
-                    setSendJobProgress({
-                        jobId: data.results.jobId,
-                        status: "pending",
-                        sent: 0,
-                        failed: 0,
-                        total: data.results.total || selectedContactIds.length || 0,
-                        errors: []
-                    });
+                    // Background job created - just show simple message
+                    alert(`Sending ${data.results.total || selectedContactIds.length} messages. This may take a while for large batches.`);
                 } else if (data.results?.partial) {
                     // Partial results due to timeout
                     alert(`${data.results.message}\n\nSent: ${data.results.sent}\nFailed: ${data.results.failed}\nRemaining: ${data.results.total - data.results.sent - data.results.failed}`);
