@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import { BACKGROUND_JOB_THRESHOLD, DYNAMIC, LARGE_SEND_FAST_PATH_THRESHOLD, MAX_DURATION } from "./lib/constants";
+import { BACKGROUND_JOB_THRESHOLD, LARGE_SEND_FAST_PATH_THRESHOLD, MAX_DURATION } from "./lib/constants";
 import { guardDuplicateRequest } from "./lib/request-guard";
 import { createBackgroundSendJob, triggerBackgroundJob } from "./lib/background-job";
 import { fetchContactsForSend } from "./lib/contacts";
@@ -9,7 +9,7 @@ import { scheduleMessageSend } from "./lib/schedule";
 import { sendDirectMessages } from "./lib/direct-send";
 
 export const maxDuration = MAX_DURATION;
-export const dynamic = DYNAMIC;
+export const dynamic = "force-dynamic";
 
 export async function POST(request: NextRequest) {
   try {
