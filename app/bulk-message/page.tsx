@@ -2,117 +2,11 @@
 
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
-
-// --- Default Filter Options ---
-// Pages will be fetched from Facebook API when user is authenticated
-
-// --- Icons ---
-const SearchIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-zinc-400">
-        <circle cx="11" cy="11" r="8"></circle>
-        <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
-    </svg>
-);
-
-const CheckIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" className="text-black">
-        <polyline points="20 6 9 17 4 12"></polyline>
-    </svg>
-);
-
-const SendIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="22" y1="2" x2="11" y2="13"></line>
-        <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-    </svg>
-);
-
-const XIcon = ({ size = 18 }: { size?: number }) => (
-    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="18" y1="6" x2="6" y2="18"></line>
-        <line x1="6" y1="6" x2="18" y2="18"></line>
-    </svg>
-);
-
-const PlusIcon = ({ size = 14 }: { size?: number }) => (
-    <svg xmlns="http://www.w3.org/2000/svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <line x1="12" y1="5" x2="12" y2="19"></line>
-        <line x1="5" y1="12" x2="19" y2="12"></line>
-    </svg>
-);
-
-const TrashIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="3 6 5 6 21 6"></polyline>
-        <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
-    </svg>
-);
-
-const FacebookIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" viewBox="0 0 24 24" fill="currentColor" stroke="none">
-        <path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"></path>
-    </svg>
-);
-
-const ChevronLeftIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="15 18 9 12 15 6"></polyline>
-    </svg>
-);
-
-const ChevronRightIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polyline points="9 18 15 12 9 6"></polyline>
-    </svg>
-);
-
-const CalendarIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect>
-        <line x1="16" y1="2" x2="16" y2="6"></line>
-        <line x1="8" y1="2" x2="8" y2="6"></line>
-        <line x1="3" y1="10" x2="21" y2="10"></line>
-    </svg>
-);
-
-const PaperclipIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"></path>
-    </svg>
-);
-
-const FileIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M13 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"></path>
-        <polyline points="13 2 13 9 20 9"></polyline>
-    </svg>
-);
-
-const VideoIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polygon points="23 7 16 12 23 17 23 7"></polygon>
-        <rect x="1" y="5" width="15" height="14" rx="2" ry="2"></rect>
-    </svg>
-);
-
-const AudioIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"></polygon>
-        <path d="M19.07 4.93a10 10 0 0 1 0 14.14M15.54 8.46a5 5 0 0 1 0 7.07"></path>
-    </svg>
-);
-
-const ImageIcon = () => (
-    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <rect x="3" y="3" width="18" height="18" rx="2" ry="2"></rect>
-        <circle cx="8.5" cy="8.5" r="1.5"></circle>
-        <polyline points="21 15 16 10 5 21"></polyline>
-    </svg>
-);
-
+import { useIcons } from "./hooks/useIcons";
 
 export default function BulkMessagePage() {
     const { data: session, status } = useSession();
+    const icons = useIcons();
     const [tags, setTags] = useState(["All"]);
     const [selectedTag, setSelectedTag] = useState("All");
     const [selectedPage, setSelectedPage] = useState("All Pages");
@@ -2362,7 +2256,7 @@ export default function BulkMessagePage() {
                             }}
                             className="flex items-center gap-2 rounded-full bg-[#1877F2] hover:bg-[#166fe5] px-4 py-2 text-sm font-semibold text-white transition-all shadow-lg shadow-blue-900/20 hover:scale-105 active:scale-95"
                         >
-                            <FacebookIcon />
+                            {icons.FacebookIcon()}
                             <span>Sign in with Facebook</span>
                         </button>
                     )}
@@ -2396,7 +2290,7 @@ export default function BulkMessagePage() {
                 <div className="mb-8 grid gap-4 md:grid-cols-[1.5fr_1fr_1fr]">
                     <div className="relative group">
                         <div className="absolute left-3 top-1/2 -translate-y-1/2 transition-colors group-focus-within:text-indigo-400">
-                            <SearchIcon />
+                            {icons.SearchIcon()}
                         </div>
                         <input
                             type="text"
@@ -2423,7 +2317,7 @@ export default function BulkMessagePage() {
                             <div className="absolute top-full left-0 right-0 mt-2 rounded-xl bg-zinc-900 border border-white/10 shadow-2xl z-50 max-h-96 overflow-hidden flex flex-col">
                                 <div className="relative p-2 border-b border-white/10">
                                     <div className="absolute left-4 top-1/2 -translate-y-1/2">
-                                        <SearchIcon />
+                                        {icons.SearchIcon()}
                                     </div>
                                     <input
                                         type="text"
@@ -2478,7 +2372,7 @@ export default function BulkMessagePage() {
                         onClick={handleCreateTag}
                         className="flex items-center gap-1.5 rounded-full border border-dashed border-zinc-700 px-3 py-1.5 text-xs font-medium text-zinc-400 hover:border-indigo-500 hover:text-indigo-400 transition-colors backdrop-blur-sm"
                     >
-                        <PlusIcon />
+                        {icons.PlusIcon()}
                         New Tag
                     </button>
                     <div className="h-4 w-px bg-zinc-800 mx-1" />
@@ -2497,7 +2391,7 @@ export default function BulkMessagePage() {
                                     onClick={(e) => handleDeleteTag(tag, e)}
                                     className="opacity-0 group-hover:opacity-100 transition-opacity hover:text-red-400 p-0.5 rounded-full hover:bg-white/10"
                                 >
-                                    <XIcon size={12} />
+                                    {icons.XIcon({ size: 12 })}
                                 </span>
                             )}
                         </button>
@@ -2530,7 +2424,7 @@ export default function BulkMessagePage() {
                                     : "border-zinc-700 bg-transparent group-hover:border-zinc-500"
                                     }`}
                             >
-                                {isPageSelected && <CheckIcon />}
+                                {isPageSelected && icons.CheckIcon()}
                             </div>
                             Select Page ({paginatedContacts.length})
                         </button>
@@ -2544,7 +2438,7 @@ export default function BulkMessagePage() {
                                     onClick={handleDelete}
                                     className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors backdrop-blur-sm"
                                 >
-                                    <TrashIcon />
+                                    {icons.TrashIcon()}
                                     Delete Selected
                                 </button>
                             </div>
@@ -2555,7 +2449,7 @@ export default function BulkMessagePage() {
                                 className="flex items-center gap-2 rounded-lg bg-red-500/10 px-3 py-1.5 text-xs font-medium text-red-400 hover:bg-red-500/20 hover:text-red-300 transition-colors backdrop-blur-sm"
                                 title="Delete all contacts (cannot be undone)"
                             >
-                                <TrashIcon />
+                                {icons.TrashIcon()}
                                 Delete All ({filteredContacts.length})
                             </button>
                         )}
@@ -2609,7 +2503,7 @@ export default function BulkMessagePage() {
                                         : "border-zinc-700 bg-zinc-950/50 group-hover:border-zinc-500"
                                         }`}
                                 >
-                                    {isSelected && <CheckIcon />}
+                                    {isSelected && icons.CheckIcon()}
                                 </div>
 
                                 <div className="relative">
@@ -2642,7 +2536,7 @@ export default function BulkMessagePage() {
                                                         onClick={(e) => handleRemoveTagFromContact(contact.id, tag, e)}
                                                         className="ml-1 opacity-0 group-hover/tag:opacity-100 hover:text-red-400 transition-opacity"
                                                     >
-                                                        <XIcon size={10} />
+                                                        {icons.XIcon({ size: 10 })}
                                                     </button>
                                                 </span>
                                             ))}
@@ -2650,7 +2544,7 @@ export default function BulkMessagePage() {
                                                 onClick={(e) => handleAddTagToContact(contact.id, e)}
                                                 className="inline-flex items-center rounded-md bg-white/5 px-1.5 py-1 text-[10px] text-zinc-500 hover:bg-white/10 hover:text-zinc-300 border border-dashed border-zinc-700 hover:border-zinc-500 transition-all"
                                             >
-                                                <PlusIcon size={10} />
+                                                {icons.PlusIcon({ size: 10 })}
                                             </button>
                                         </div>
                                     </div>
@@ -2662,7 +2556,7 @@ export default function BulkMessagePage() {
                     {!isLoading && paginatedContacts.length === 0 && (
                         <div className="py-20 text-center animate-in fade-in zoom-in-95 duration-300">
                             <div className="inline-flex h-12 w-12 items-center justify-center rounded-full bg-zinc-900 mb-4">
-                                <SearchIcon />
+                                {icons.SearchIcon()}
                             </div>
                             {contacts.length === 0 ? (
                                 <>
@@ -2702,7 +2596,7 @@ export default function BulkMessagePage() {
                                 disabled={currentPage === 1}
                                 className="p-2 rounded-lg hover:bg-white/5 disabled:opacity-50 disabled:hover:bg-transparent transition-colors text-zinc-400 hover:text-zinc-200"
                             >
-                                <ChevronLeftIcon />
+                                {icons.ChevronLeftIcon()}
                             </button>
 
                             <div className="flex items-center gap-1">
@@ -2725,7 +2619,7 @@ export default function BulkMessagePage() {
                                 disabled={currentPage === totalPages}
                                 className="p-2 rounded-lg hover:bg-white/5 disabled:opacity-50 disabled:hover:bg-transparent transition-colors text-zinc-400 hover:text-zinc-200"
                             >
-                                <ChevronRightIcon />
+                                {icons.ChevronRightIcon()}
                             </button>
                         </div>
                     </div>
@@ -2890,7 +2784,7 @@ export default function BulkMessagePage() {
                                 onClick={() => setSelectedContactIds([])}
                                 className="p-1.5 hover:bg-white/10 rounded-full text-zinc-500 hover:text-zinc-300 transition-colors"
                             >
-                                <XIcon />
+                                {icons.XIcon({})}
                             </button>
                         </div>
 
@@ -2905,10 +2799,10 @@ export default function BulkMessagePage() {
                             {/* Attachment Preview */}
                             {attachedFile && (() => {
                                 const getFileIcon = () => {
-                                    if (attachedFile.type.startsWith("image/")) return <ImageIcon />;
-                                    if (attachedFile.type.startsWith("video/")) return <VideoIcon />;
-                                    if (attachedFile.type.startsWith("audio/")) return <AudioIcon />;
-                                    return <FileIcon />;
+                                    if (attachedFile.type.startsWith("image/")) return icons.ImageIcon();
+                                    if (attachedFile.type.startsWith("video/")) return icons.VideoIcon();
+                                    if (attachedFile.type.startsWith("audio/")) return icons.AudioIcon();
+                                    return icons.FileIcon();
                                 };
 
                                 const getFileTypeLabel = () => {
@@ -2931,7 +2825,7 @@ export default function BulkMessagePage() {
                                             onClick={handleRemoveFile}
                                             className="p-1.5 hover:bg-white/10 rounded-full text-zinc-500 hover:text-red-400 transition-colors"
                                         >
-                                            <XIcon size={14} />
+                                            {icons.XIcon({ size: 14 })}
                                         </button>
                                     </div>
                                 );
@@ -2961,12 +2855,12 @@ export default function BulkMessagePage() {
                                     className="text-zinc-400 hover:text-indigo-300 transition-colors bg-white/5 p-1.5 rounded-lg hover:bg-indigo-500/20 border border-transparent hover:border-indigo-500/30"
                                     title="Attach media (images, videos, audio, documents - max 25MB)"
                                 >
-                                    <PaperclipIcon />
+                                    {icons.PaperclipIcon()}
                                 </button>
 
                                 <div className="h-4 w-px bg-zinc-800 mx-1" />
                                 <div className="flex items-center gap-2 bg-white/5 px-2.5 py-1 rounded-lg border border-white/5">
-                                    <CalendarIcon />
+                                    {icons.CalendarIcon()}
                                     <input
                                         type="datetime-local"
                                         value={scheduleDate}
@@ -3018,7 +2912,7 @@ export default function BulkMessagePage() {
                                                     ? "Schedule"
                                                     : "Send Broadcast"}
                                     </span>
-                                    <SendIcon />
+                                    {icons.SendIcon()}
                                 </button>
                             </div>
                         </div>
@@ -3043,7 +2937,7 @@ export default function BulkMessagePage() {
                                 onClick={() => setShowReconnectModal(false)}
                                 className="rounded-lg p-2 hover:bg-zinc-800 transition-colors"
                             >
-                                <XIcon size={20} />
+                                {icons.XIcon({ size: 20 })}
                             </button>
                         </div>
 
@@ -3051,7 +2945,7 @@ export default function BulkMessagePage() {
                             {/* Search */}
                             <div className="relative mb-4">
                                 <div className="absolute left-3 top-1/2 -translate-y-1/2">
-                                    <SearchIcon />
+                                    {icons.SearchIcon()}
                                 </div>
                                 <input
                                     type="text"
@@ -3094,7 +2988,7 @@ export default function BulkMessagePage() {
                                                             onClick={handleBulkDisconnect}
                                                             className="flex items-center gap-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors"
                                                         >
-                                                            <TrashIcon />
+                                                            {icons.TrashIcon()}
                                                             Disconnect Selected
                                                         </button>
                                                     </>
@@ -3137,7 +3031,7 @@ export default function BulkMessagePage() {
                                                     disabled={connectedPagesCurrentPage === 1}
                                                     className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                                 >
-                                                    <ChevronLeftIcon />
+                                                    {icons.ChevronLeftIcon()}
                                                     Previous
                                                 </button>
                                                 <span className="text-sm text-zinc-400">
@@ -3149,7 +3043,7 @@ export default function BulkMessagePage() {
                                                     className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                                 >
                                                     Next
-                                                    <ChevronRightIcon />
+                                                    {icons.ChevronRightIcon()}
                                                 </button>
                                             </div>
                                         )}
@@ -3176,14 +3070,14 @@ export default function BulkMessagePage() {
                                                     onClick={handleBulkConnectAvailablePages}
                                                     className="flex items-center gap-1.5 rounded-lg bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1.5 text-xs font-medium text-indigo-400 transition-colors"
                                                 >
-                                                    <CheckIcon />
+                                                    {icons.CheckIcon()}
                                                     Connect Selected
                                                 </button>
                                                 <button
                                                     onClick={handleBulkDeleteAvailablePages}
                                                     className="flex items-center gap-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/20 px-3 py-1.5 text-xs font-medium text-red-400 transition-colors"
                                                 >
-                                                    <TrashIcon />
+                                                    {icons.TrashIcon()}
                                                     Delete Selected
                                                 </button>
                                             </>
@@ -3357,7 +3251,7 @@ export default function BulkMessagePage() {
                                                     disabled={pageModalCurrentPage === 1}
                                                     className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                                 >
-                                                    <ChevronLeftIcon />
+                                                    {icons.ChevronLeftIcon()}
                                                     Previous
                                                 </button>
                                                 <span className="text-sm text-zinc-400">
@@ -3369,7 +3263,7 @@ export default function BulkMessagePage() {
                                                     className="flex items-center gap-2 rounded-lg bg-zinc-800/50 hover:bg-zinc-800 px-4 py-2 text-sm text-zinc-300 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                                                 >
                                                     Next
-                                                    <ChevronRightIcon />
+                                                    {icons.ChevronRightIcon()}
                                                 </button>
                                             </div>
                                         )}
@@ -3389,7 +3283,7 @@ export default function BulkMessagePage() {
                                 onClick={handleReconnect}
                                 className="flex items-center gap-2 rounded-lg bg-gradient-to-r from-indigo-500 to-purple-600 hover:from-indigo-600 hover:to-purple-700 px-4 py-2 text-sm font-medium text-white transition-all shadow-lg shadow-indigo-500/25"
                             >
-                                <FacebookIcon />
+                                {icons.FacebookIcon()}
                                 Save Connected Pages ({connectedPageIds.length})
                             </button>
                         </div>
