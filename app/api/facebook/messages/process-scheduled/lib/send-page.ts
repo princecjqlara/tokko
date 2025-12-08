@@ -4,6 +4,27 @@ import { sendMessageToContact } from "./send-contact";
 import { ContactRecord } from "./types";
 import { chunkArray, sleep } from "./utils";
 
+async function markContactSending(contactId: number | null | undefined, jobId: number | undefined) {
+  if (!contactId) return true;
+  try {
+    const { data, error } = await supabaseServer
+      .from("contacts")
+      .update({ last_send_status: "sending", last_send_job_id: jobId || null, last_send_at: new Date().toISOString() })
+      .eq("id", contactId)
+      .neq("last_send_status", "sent")
+      .select("id")
+      .limit(1);
+    if (error || !data?.length) {
+      console.warn("[Process Scheduled] Skip contact due to lock failure", { contactId, jobId, error: error?.message });
+      return false;
+    }
+    return true;
+  } catch (error: any) {
+    console.warn("[Process Scheduled] Skip contact due to lock exception", { contactId, jobId, error: error.message });
+    return false;
+  }
+}
+
 async function updateContactStatus(contactId: number | null | undefined, jobId: number | undefined, status: "sent" | "failed" | null) {
   if (!contactId) return;
   const updates: any = {
@@ -51,6 +72,8 @@ export async function sendMessagesForPage(
   for (const contactChunk of chunkArray(contacts, 25)) {
     for (const contact of contactChunk) {
       if (contact.last_send_status === "sent") continue;
+      const locked = await markContactSending(contact.id, undefined);
+      if (!locked) continue;
       const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment, messageTag);
 
       if (sendResult.success) {

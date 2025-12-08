@@ -74,8 +74,28 @@ export async function sendDirectMessages(params: DirectSendParams) {
         continue;
       }
 
+      // Attempt to lock this contact for sending
+      if (contact.id) {
+        try {
+          const { data, error } = await supabaseServer
+            .from("contacts")
+            .update({ last_send_status: "sending", last_send_job_id: null, last_send_at: new Date().toISOString() })
+            .eq("id", contact.id)
+            .neq("last_send_status", "sent")
+            .select("id")
+            .limit(1);
+          if (error || !data?.length) {
+            console.warn(`[Send Message API] Skipping ${contact.contact_name} due to lock failure`, error?.message);
+            continue;
+          }
+        } catch (error: any) {
+          console.warn(`[Send Message API] Skipping ${contact.contact_name} due to lock exception`, error.message);
+          continue;
+        }
+        processedContactIds.push(contact.id);
+      }
+
       sentTextToContacts.add(contactIdStr);
-      if (contact.id) processedContactIds.push(contact.id);
 
       try {
         let payload: any;

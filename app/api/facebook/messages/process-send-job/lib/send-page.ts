@@ -18,6 +18,27 @@ async function updateContactStatus(contactId: number | null | undefined, jobId: 
   }
 }
 
+async function markContactSending(contactId: number | null | undefined, jobId: number | undefined) {
+  if (!contactId) return true;
+  try {
+    const { data, error } = await supabaseServer
+      .from("contacts")
+      .update({ last_send_status: "sending", last_send_job_id: jobId || null, last_send_at: new Date().toISOString() })
+      .eq("id", contactId)
+      .neq("last_send_status", "sent")
+      .select("id")
+      .limit(1);
+    if (error) {
+      console.warn("[Send Page] Failed to lock contact for sending", { contactId, jobId, error: error.message });
+      return false;
+    }
+    return !!data?.length;
+  } catch (error: any) {
+    console.warn("[Send Page] Exception locking contact for sending", { contactId, jobId, error: error.message });
+    return false;
+  }
+}
+
 type Params = {
   pageId: string;
   contacts: ContactRecord[];
@@ -123,6 +144,12 @@ export async function sendMessagesForPage(params: Params): Promise<PageSendResul
     }
 
     if (localSentIds.has(contact.contact_id)) {
+      continue;
+    }
+
+    const locked = await markContactSending(contact.id, jobId);
+    if (!locked) {
+      // Another process likely sending; skip
       continue;
     }
 
