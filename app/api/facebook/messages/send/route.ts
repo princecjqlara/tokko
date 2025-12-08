@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import { ALLOWED_MESSAGE_TAGS, BACKGROUND_JOB_THRESHOLD, LARGE_SEND_FAST_PATH_THRESHOLD } from "./lib/constants";
+import { ALLOWED_MESSAGE_TAGS, BACKGROUND_JOB_THRESHOLD, LARGE_SEND_FAST_PATH_THRESHOLD, ACTIVE_JOB_STATUSES } from "./lib/constants";
 import { guardDuplicateRequest } from "./lib/request-guard";
 import { createBackgroundSendJob, triggerBackgroundJob } from "./lib/background-job";
 import { fetchContactsForSend } from "./lib/contacts";
 import { scheduleMessageSend } from "./lib/schedule";
 import { sendDirectMessages } from "./lib/direct-send";
+import { supabaseServer } from "@/lib/supabase-server";
 
 export const maxDuration = 300; // keep in sync with ./lib/constants
 export const dynamic = "force-dynamic";
@@ -59,6 +60,22 @@ export async function POST(request: NextRequest) {
     if (confirm !== true) {
       console.warn("[Send Message API] No confirm flag provided; auto-confirming broadcast to avoid duplicates.");
       confirm = true;
+    }
+
+    // Block if a background job is already active for this user
+    const { data: activeJob, error: activeJobError } = await supabaseServer
+      .from("send_jobs")
+      .select("id,status")
+      .eq("user_id", userId)
+      .in("status", ACTIVE_JOB_STATUSES)
+      .maybeSingle();
+    if (activeJobError) {
+      console.warn("[Send Message API] Active job check failed", activeJobError.message);
+    } else if (activeJob) {
+      return NextResponse.json(
+        { error: "A broadcast is already in progress. Please cancel or wait for it to finish.", jobId: activeJob.id },
+        { status: 409 }
+      );
     }
 
     const shouldUseBackgroundJob = !scheduleDate && contactIds.length > BACKGROUND_JOB_THRESHOLD;

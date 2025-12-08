@@ -23,3 +23,9 @@ export const ALLOWED_MESSAGE_TAGS = [
   "POST_PURCHASE_UPDATE",
   "HUMAN_AGENT"
 ] as const;
+
+// Per-contact send throttle (ms) to slow down bursts and reduce duplicates
+export const CONTACT_SEND_THROTTLE_MS = Number(process.env.CONTACT_SEND_THROTTLE_MS || "1000");
+
+// Active job statuses used to block duplicate broadcasts
+export const ACTIVE_JOB_STATUSES = ["pending", "running", "processing"];

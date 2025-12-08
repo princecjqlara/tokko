@@ -1,6 +1,6 @@
 import { supabaseServer } from "@/lib/supabase-server";
 import { ContactRecord } from "./contacts";
-import { VERCEL_SEND_TIMEOUT_MS } from "./constants";
+import { CONTACT_SEND_THROTTLE_MS, VERCEL_SEND_TIMEOUT_MS } from "./constants";
 
 type DirectSendParams = {
   contacts: ContactRecord[];
@@ -8,8 +8,6 @@ type DirectSendParams = {
   attachment: any;
   messageTag: string;
 };
-
-const SEND_THROTTLE_MS = 50;
 
 export async function sendDirectMessages(params: DirectSendParams) {
   const contactsByPage = new Map<string, ContactRecord[]>();
@@ -133,7 +131,7 @@ export async function sendDirectMessages(params: DirectSendParams) {
           });
         }
 
-        await new Promise(resolve => setTimeout(resolve, SEND_THROTTLE_MS));
+        await new Promise(resolve => setTimeout(resolve, Math.max(CONTACT_SEND_THROTTLE_MS, 50)));
       } catch (error: any) {
         sentTextToContacts.delete(contactIdStr);
         results.failed++;

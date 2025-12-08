@@ -1,4 +1,5 @@
-export const MESSAGE_SEND_THROTTLE_MS = 50;
+// Send one message at a time with a slower throttle to avoid rapid duplicates
+export const MESSAGE_SEND_THROTTLE_MS = Number(process.env.CONTACT_SEND_THROTTLE_MS || "1000");
 export const ATTACHMENT_THROTTLE_MS = 300;
 
 const DEFAULT_PAGE_CHUNK_SIZE = 150;
