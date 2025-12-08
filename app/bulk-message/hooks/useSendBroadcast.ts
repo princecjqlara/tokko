@@ -124,7 +124,7 @@ export function useSendBroadcast({ onStart, onFinish, onSuccess, onBackground, o
 
     isSendingRef.current = true;
     activeSignatureRef.current = signature;
-    const requestId = `broadcast_${signature.split("").reduce((acc, char) => (acc * 31 + char.charCodeAt(0)) >>> 0, 0).toString(36)}`;
+    const requestId = `broadcast_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     lastSendRequestIdRef.current = requestId;
     sendAbortControllerRef.current = new AbortController();
     setActiveSends(prev => prev + 1);
