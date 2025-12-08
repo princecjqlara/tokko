@@ -432,8 +432,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   }
 
   // Atomically claim the job by updating status and setting a processing marker
-  // Two-step claim: try pending/failed first, then stale running/processing
-  const staleCutoffIso = new Date(Date.now() - 120 * 1000).toISOString();
+  // Two-step claim: try pending/failed first, then running/processing (no stale gate to avoid being stuck)
   const baseUpdate = {
     status: "running",
     updated_at: new Date().toISOString(),
@@ -459,7 +458,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       .from("send_jobs")
       .update(baseUpdate)
       .eq("id", sendJob.id)
-      .or(`and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
+      .or(`status.eq.running,status.eq.processing`)
       .select()
       .maybeSingle(); // return null if nothing matched
     updateResult = staleClaim.data;
