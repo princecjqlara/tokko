@@ -17,7 +17,7 @@ export async function fetchContactsForScheduledMessage(userId: string, contactId
     for (const chunk of chunkArray([...normalized.dbIds], CONTACT_FETCH_CHUNK)) {
       const { data, error } = await supabaseServer
         .from("contacts")
-        .select("id, contact_id, page_id, contact_name, page_name")
+        .select("id, contact_id, page_id, contact_name, page_name, last_send_status, last_send_job_id, last_send_at")
         .in("id", chunk)
         .eq("user_id", userId);
 
@@ -37,7 +37,7 @@ export async function fetchContactsForScheduledMessage(userId: string, contactId
     for (const chunk of chunkArray([...remainingByContactId], CONTACT_FETCH_CHUNK)) {
       const { data, error } = await supabaseServer
         .from("contacts")
-        .select("id, contact_id, page_id, contact_name, page_name")
+        .select("id, contact_id, page_id, contact_name, page_name, last_send_status, last_send_job_id, last_send_at")
         .in("contact_id", chunk)
         .eq("user_id", userId);
 

@@ -53,6 +53,21 @@ export async function processScheduledMessage(scheduledMessage: ScheduledMessage
       })
       .eq("id", scheduledMessage.id);
 
+    // Clear contact send markers after scheduled run
+    try {
+      const contactDbIds = deduplicatedContacts.map(c => c.id).filter(Boolean);
+      const CHUNK = 1000;
+      for (let i = 0; i < contactDbIds.length; i += CHUNK) {
+        const idsChunk = contactDbIds.slice(i, i + CHUNK);
+        await supabaseServer
+          .from("contacts")
+          .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+          .in("id", idsChunk);
+      }
+    } catch (error) {
+      console.warn("[Process Scheduled] Failed to clear contact send status:", (error as any)?.message);
+    }
+
     return {
       processed: 1,
       success: finalStatus === "sent" ? 1 : 0,

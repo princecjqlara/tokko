@@ -13,6 +13,9 @@ export type ContactRecord = {
   page_id: string;
   contact_name: string;
   page_name: string;
+  last_send_status?: string | null;
+  last_send_job_id?: number | null;
+  last_send_at?: string | null;
 };
 
 export type ProcessResult = {

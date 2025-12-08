@@ -12,12 +12,16 @@ type DirectSendParams = {
 export async function sendDirectMessages(params: DirectSendParams) {
   const contactsByPage = new Map<string, ContactRecord[]>();
   for (const contact of params.contacts) {
+    if (contact.last_send_status === "sent") {
+      continue;
+    }
     const pageId = contact.page_id;
     if (!contactsByPage.has(pageId)) contactsByPage.set(pageId, []);
     contactsByPage.get(pageId)!.push(contact);
   }
 
   const sentTextToContacts = new Set<string>();
+  const processedContactIds: number[] = [];
   const results = {
     success: 0,
     failed: 0,
@@ -71,6 +75,7 @@ export async function sendDirectMessages(params: DirectSendParams) {
       }
 
       sentTextToContacts.add(contactIdStr);
+      if (contact.id) processedContactIds.push(contact.id);
 
       try {
         let payload: any;
@@ -119,6 +124,10 @@ export async function sendDirectMessages(params: DirectSendParams) {
         if (response.ok && !data.error) {
           results.success++;
           console.log(`Sent ${messageType} to ${contact.contact_name} (${contact.contact_id})`);
+          await supabaseServer
+            .from("contacts")
+            .update({ last_send_status: "sent", last_send_job_id: null, last_send_at: new Date().toISOString() })
+            .eq("id", contact.id);
         } else {
           sentTextToContacts.delete(contactIdStr);
           results.failed++;
@@ -129,6 +138,10 @@ export async function sendDirectMessages(params: DirectSendParams) {
             page: contact.page_name,
             error: errorMsg
           });
+          await supabaseServer
+            .from("contacts")
+            .update({ last_send_status: "failed", last_send_job_id: null, last_send_at: new Date().toISOString() })
+            .eq("id", contact.id);
         }
 
         await new Promise(resolve => setTimeout(resolve, Math.max(CONTACT_SEND_THROTTLE_MS, 50)));
@@ -141,8 +154,26 @@ export async function sendDirectMessages(params: DirectSendParams) {
           page: contact.page_name,
           error: error.message || "Unknown error"
         });
+        await supabaseServer
+          .from("contacts")
+          .update({ last_send_status: "failed", last_send_job_id: null, last_send_at: new Date().toISOString() })
+          .eq("id", contact.id);
       }
     }
+  }
+
+  // Clear markers after the broadcast finishes
+  try {
+    const CHUNK = 500;
+    for (let i = 0; i < processedContactIds.length; i += CHUNK) {
+      const chunk = processedContactIds.slice(i, i + CHUNK);
+      await supabaseServer
+        .from("contacts")
+        .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+        .in("id", chunk);
+    }
+  } catch (error) {
+    console.warn("[Send Message API] Failed to clear contact send status after direct send:", (error as any)?.message);
   }
 
   console.log(`[Send Message API] Direct send complete: ${results.success} success, ${results.failed} failed`);

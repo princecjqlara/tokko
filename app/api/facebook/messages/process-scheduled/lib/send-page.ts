@@ -4,6 +4,20 @@ import { sendMessageToContact } from "./send-contact";
 import { ContactRecord } from "./types";
 import { chunkArray, sleep } from "./utils";
 
+async function updateContactStatus(contactId: number | null | undefined, jobId: number | undefined, status: "sent" | "failed" | null) {
+  if (!contactId) return;
+  const updates: any = {
+    last_send_status: status,
+    last_send_job_id: status ? jobId || null : null,
+    last_send_at: status ? new Date().toISOString() : null
+  };
+  try {
+    await supabaseServer.from("contacts").update(updates).eq("id", contactId);
+  } catch (error) {
+    console.warn("[Process Scheduled] Failed to mark contact status", { contactId, status, jobId, error: (error as any)?.message });
+  }
+}
+
 export async function sendMessagesForPage(
   pageId: string,
   contacts: ContactRecord[],
@@ -36,10 +50,12 @@ export async function sendMessagesForPage(
 
   for (const contactChunk of chunkArray(contacts, 25)) {
     for (const contact of contactChunk) {
+      if (contact.last_send_status === "sent") continue;
       const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment, messageTag);
 
       if (sendResult.success) {
         success++;
+        await updateContactStatus(contact.id, undefined, "sent");
       } else {
         failed++;
         const errorMsg = sendResult.error || "Unknown error";
@@ -48,6 +64,7 @@ export async function sendMessagesForPage(
           page: contact.page_name,
           error: errorMsg
         });
+        await updateContactStatus(contact.id, undefined, "failed");
       }
 
       await sleep(MESSAGE_SEND_THROTTLE_MS);

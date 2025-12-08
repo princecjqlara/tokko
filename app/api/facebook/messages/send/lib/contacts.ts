@@ -8,6 +8,9 @@ export type ContactRecord = {
   page_id: string;
   contact_name: string;
   page_name: string;
+  last_send_status?: string | null;
+  last_send_job_id?: number | null;
+  last_send_at?: string | null;
 };
 
 export async function fetchContactsForSend(userId: string, contactIds: (string | number)[]) {
@@ -20,7 +23,7 @@ export async function fetchContactsForSend(userId: string, contactIds: (string |
     try {
       const chunkQuery = await supabaseServer
         .from("contacts")
-        .select("id, contact_id, page_id, contact_name, page_name")
+        .select("id, contact_id, page_id, contact_name, page_name, last_send_status, last_send_job_id, last_send_at")
         .in("id", chunk)
         .eq("user_id", userId);
 
@@ -41,7 +44,7 @@ export async function fetchContactsForSend(userId: string, contactIds: (string |
     try {
       const chunkQuery = await supabaseServer
         .from("contacts")
-        .select("id, contact_id, page_id, contact_name, page_name")
+        .select("id, contact_id, page_id, contact_name, page_name, last_send_status, last_send_job_id, last_send_at")
         .in("contact_id", chunk)
         .eq("user_id", userId);
 
