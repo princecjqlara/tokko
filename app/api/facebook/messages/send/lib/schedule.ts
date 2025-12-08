@@ -7,6 +7,7 @@ type ScheduleParams = {
   message: string;
   attachment: any;
   scheduleDate: string;
+  messageTag: string;
 };
 
 export async function scheduleMessageSend(params: ScheduleParams) {
@@ -18,6 +19,9 @@ export async function scheduleMessageSend(params: ScheduleParams) {
   }
 
   const uniqueContactIdsForSchedule = params.contacts.map(c => c.contact_id || c.id);
+  const attachmentWithMeta = params.attachment
+    ? { ...params.attachment, _meta: { ...(params.attachment._meta || {}), messageTag: params.messageTag } }
+    : { _meta: { messageTag: params.messageTag } };
 
   const { data: scheduledMessage, error: scheduleError } = await supabaseServer
     .from("scheduled_messages")
@@ -25,7 +29,7 @@ export async function scheduleMessageSend(params: ScheduleParams) {
       user_id: params.userId,
       contact_ids: uniqueContactIdsForSchedule,
       message: params.message.trim(),
-      attachment: params.attachment || null,
+      attachment: attachmentWithMeta,
       scheduled_for: scheduledDate.toISOString(),
       status: "pending"
     })

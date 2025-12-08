@@ -6,6 +6,7 @@ type DirectSendParams = {
   contacts: ContactRecord[];
   message: string;
   attachment: any;
+  messageTag: string;
 };
 
 const SEND_THROTTLE_MS = 50;
@@ -92,7 +93,7 @@ export async function sendDirectMessages(params: DirectSendParams) {
               }
             },
             messaging_type: "MESSAGE_TAG",
-            tag: "ACCOUNT_UPDATE"
+            tag: params.messageTag
           };
         } else {
           messageType = "TEXT";
@@ -102,7 +103,7 @@ export async function sendDirectMessages(params: DirectSendParams) {
             recipient: { id: contact.contact_id },
             message: { text: personalizedMessage },
             messaging_type: "MESSAGE_TAG",
-            tag: "ACCOUNT_UPDATE"
+            tag: params.messageTag
           };
         }
 

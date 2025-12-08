@@ -20,6 +20,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
   try {
     const contactIds = coerceContactIds(claimedJob.contact_ids);
     const contacts = await fetchContactsForSendJob(claimedJob.user_id, contactIds);
+    const messageTag = (claimedJob as any).message_tag || claimedJob.attachment?._meta?.messageTag || "ACCOUNT_UPDATE";
     logEvent("Contacts fetched for job", {
       jobId: claimedJob.id,
       requestedIds: contactIds.length,
@@ -130,6 +131,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
           contacts: chunk,
           message: claimedJob.message,
           attachment: claimedJob.attachment,
+          messageTag,
           userAccessToken,
           sentContactIds,
           jobId: claimedJob.id

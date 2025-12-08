@@ -10,12 +10,22 @@ type Params = {
   message: string;
   attachment: any;
   userAccessToken: string | null;
+  messageTag?: string;
   sentContactIds?: Set<string>;
   jobId?: number;
 };
 
 export async function sendMessagesForPage(params: Params): Promise<PageSendResult> {
-  const { pageId, contacts, message, attachment, userAccessToken, sentContactIds, jobId } = params;
+  const {
+    pageId,
+    contacts,
+    message,
+    attachment,
+    userAccessToken,
+    messageTag = "ACCOUNT_UPDATE",
+    sentContactIds,
+    jobId
+  } = params;
 
   const { data: pageData, error: pageError } = await supabaseServer
     .from("facebook_pages")
@@ -102,7 +112,7 @@ export async function sendMessagesForPage(params: Params): Promise<PageSendResul
       sentContactIds.add(contact.contact_id);
     }
 
-    const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment);
+    const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment, messageTag);
 
     if (sendResult.success) {
       success++;

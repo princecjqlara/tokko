@@ -16,3 +16,10 @@ export const VERCEL_SEND_TIMEOUT_MS = 280000;
 // Duplicate request guard
 export const REQUEST_TTL_MS = 5 * 60 * 1000;
 export const REQUEST_CLEANUP_INTERVAL_MS = 60 * 1000;
+
+export const ALLOWED_MESSAGE_TAGS = [
+  "ACCOUNT_UPDATE",
+  "CONFIRMED_EVENT_UPDATE",
+  "POST_PURCHASE_UPDATE",
+  "HUMAN_AGENT"
+] as const;

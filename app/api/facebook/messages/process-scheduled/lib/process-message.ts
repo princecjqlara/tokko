@@ -5,6 +5,7 @@ import { sendMessagesForPage } from "./send-page";
 import { coerceContactIds } from "./utils";
 
 export async function processScheduledMessage(scheduledMessage: ScheduledMessageRecord): Promise<ProcessResult> {
+  const messageTag = scheduledMessage.attachment?._meta?.messageTag || "ACCOUNT_UPDATE";
   await supabaseServer
     .from("scheduled_messages")
     .update({ status: "processing", updated_at: new Date().toISOString() })
@@ -34,7 +35,7 @@ export async function processScheduledMessage(scheduledMessage: ScheduledMessage
     const messageErrors: any[] = [];
 
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
-      const result = await sendMessagesForPage(pageId, pageContacts, scheduledMessage.message, scheduledMessage.attachment);
+      const result = await sendMessagesForPage(pageId, pageContacts, scheduledMessage.message, scheduledMessage.attachment, messageTag);
       messageSuccess += result.success;
       messageFailed += result.failed;
       messageErrors.push(...result.errors);

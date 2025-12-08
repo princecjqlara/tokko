@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import { BACKGROUND_JOB_THRESHOLD, LARGE_SEND_FAST_PATH_THRESHOLD } from "./lib/constants";
+import { ALLOWED_MESSAGE_TAGS, BACKGROUND_JOB_THRESHOLD, LARGE_SEND_FAST_PATH_THRESHOLD } from "./lib/constants";
 import { guardDuplicateRequest } from "./lib/request-guard";
 import { createBackgroundSendJob, triggerBackgroundJob } from "./lib/background-job";
 import { fetchContactsForSend } from "./lib/contacts";
@@ -32,7 +32,9 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    let { contactIds, message, scheduleDate, attachment, confirm } = body;
+    let { contactIds, message, scheduleDate, attachment, confirm, messageTag } = body;
+    const normalizedTag = typeof messageTag === "string" ? messageTag.trim().toUpperCase() : "";
+    const safeMessageTag = ALLOWED_MESSAGE_TAGS.includes(normalizedTag as any) ? normalizedTag : "ACCOUNT_UPDATE";
 
     const uniqueContactIds = Array.from(new Set(contactIds || []));
     if (uniqueContactIds.length !== (contactIds?.length || 0)) {
@@ -65,7 +67,8 @@ export async function POST(request: NextRequest) {
         userId,
         contactIds,
         message,
-        attachment
+        attachment,
+        messageTag: safeMessageTag
       });
 
       if (jobError || !sendJob) {
@@ -113,7 +116,8 @@ export async function POST(request: NextRequest) {
         contacts,
         message,
         attachment,
-        scheduleDate
+        scheduleDate,
+        messageTag: safeMessageTag
       });
 
       if (scheduled.error) {
@@ -126,7 +130,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(scheduled.result);
     }
 
-    const directResults = await sendDirectMessages({ contacts, message, attachment });
+    const directResults = await sendDirectMessages({ contacts, message, attachment, messageTag: safeMessageTag });
 
     return NextResponse.json({
       success: true,

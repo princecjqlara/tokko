@@ -6,17 +6,21 @@ type CreateJobParams = {
   contactIds: (string | number)[];
   message: string;
   attachment: any;
+  messageTag: string;
 };
 
 export async function createBackgroundSendJob(params: CreateJobParams) {
   const dedupedContactIds = Array.from(new Set(params.contactIds));
+  const attachmentWithMeta = params.attachment
+    ? { ...params.attachment, _meta: { ...(params.attachment._meta || {}), messageTag: params.messageTag } }
+    : { _meta: { messageTag: params.messageTag } };
   const { data: sendJob, error: jobError } = await supabaseServer
     .from("send_jobs")
     .insert({
       user_id: params.userId,
       contact_ids: dedupedContactIds,
       message: params.message.trim(),
-      attachment: params.attachment || null,
+      attachment: attachmentWithMeta,
       status: "pending",
       total_count: dedupedContactIds.length,
       started_at: new Date().toISOString()

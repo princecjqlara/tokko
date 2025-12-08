@@ -35,12 +35,16 @@ export default function BulkMessagePage() {
 
   const {
     activeSends,
+    isSending,
     isUploadingFile,
     scheduledNotice,
     setScheduledNotice,
     isCancellingSchedule,
     setIsCancellingSchedule,
+    isCancellingJob,
     isSendingRef,
+    activeJobId,
+    cancelActiveJob,
     sendAbortControllerRef,
     sendBroadcast
   } = useSendBroadcast({
@@ -79,6 +83,7 @@ export default function BulkMessagePage() {
       message: msg.message,
       scheduleDate: msg.scheduleDate,
       attachedFile: msg.attachedFile,
+      messageTag: msg.messageTag,
       setMessage: msg.setMessage,
       setSelectedContactIds,
       setScheduleDate: msg.setScheduleDate,
@@ -87,9 +92,14 @@ export default function BulkMessagePage() {
     });
   };
 
-  const handleCancelSend = () => {
-    sendAbortControllerRef.current?.abort();
-    isSendingRef.current = false;
+  const handleCancelSend = async () => {
+    if (isSendingRef.current) {
+      sendAbortControllerRef.current?.abort();
+      isSendingRef.current = false;
+    }
+    if (activeJobId) {
+      await cancelActiveJob();
+    }
   };
 
   const handleCancelScheduled = async () => {
@@ -140,7 +150,29 @@ export default function BulkMessagePage() {
 
         <FiltersBar searchQuery={searchQuery} setSearchQuery={setSearchQuery} tags={tags} selectedTag={selectedTag} setSelectedTag={setSelectedTag} selectedPage={pm.selectedPage} setSelectedPage={pm.setSelectedPage} pages={pm.pages} showPageDropdown={pm.showPageDropdown} setShowPageDropdown={pm.setShowPageDropdown} dateFilter={dateFilter} setDateFilter={setDateFilter} onManagePages={() => pm.setShowReconnectModal(true)} icons={icons} />
 
-        <MessageComposer message={msg.message} setMessage={msg.setMessage} scheduleDate={msg.scheduleDate} setScheduleDate={msg.setScheduleDate} attachedFile={msg.attachedFile} setAttachedFile={msg.setAttachedFile} fileInputRef={msg.fileInputRef} onSend={handleSend} onCancelSend={handleCancelSend} isUploadingFile={isUploadingFile} activeSends={activeSends} icons={icons} scheduledNotice={scheduledNotice} onCancelScheduled={handleCancelScheduled} isCancellingSchedule={isCancellingSchedule} />
+        <MessageComposer
+          message={msg.message}
+          setMessage={msg.setMessage}
+          scheduleDate={msg.scheduleDate}
+          setScheduleDate={msg.setScheduleDate}
+          attachedFile={msg.attachedFile}
+          setAttachedFile={msg.setAttachedFile}
+          messageTag={msg.messageTag}
+          setMessageTag={msg.setMessageTag}
+          fileInputRef={msg.fileInputRef}
+          onSend={handleSend}
+          onCancelSend={handleCancelSend}
+          isUploadingFile={isUploadingFile}
+          isSending={isSending}
+          activeSends={activeSends}
+          hasActiveJob={!!activeJobId}
+          isCancellingJob={isCancellingJob}
+          onCancelJob={cancelActiveJob}
+          icons={icons}
+          scheduledNotice={scheduledNotice}
+          onCancelScheduled={handleCancelScheduled}
+          isCancellingSchedule={isCancellingSchedule}
+        />
 
         <ContactList paginatedContacts={filters.paginatedContacts} toggleSelection={filters.toggleSelection} toggleSelectPage={filters.toggleSelectPage} selectAllFiltered={filters.selectAllFiltered} clearSelection={filters.clearSelection} isPageSelected={filters.isPageSelected} isAllFilteredSelected={filters.isAllFilteredSelected} currentPage={currentPage} setCurrentPage={setCurrentPage} totalPages={filters.totalPages} selectedContactIds={selectedContactIds} icons={icons} />
 

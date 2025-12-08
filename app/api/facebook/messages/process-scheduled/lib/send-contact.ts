@@ -1,6 +1,12 @@
 import { ContactRecord } from "./types";
 
-export async function sendMessageToContact(pageAccessToken: string, contact: ContactRecord, message: string, attachment: any) {
+export async function sendMessageToContact(
+  pageAccessToken: string,
+  contact: ContactRecord,
+  message: string,
+  attachment: any,
+  messageTag: string
+) {
   const firstName = contact.contact_name?.split(" ")[0] || "there";
   const personalizedMessage = message.replace(/{FirstName}/g, firstName);
 
@@ -19,7 +25,7 @@ export async function sendMessageToContact(pageAccessToken: string, contact: Con
           }
         },
         messaging_type: "MESSAGE_TAG",
-        tag: "ACCOUNT_UPDATE"
+        tag: messageTag
       };
 
       const mediaResponse = await fetch(
@@ -42,12 +48,12 @@ export async function sendMessageToContact(pageAccessToken: string, contact: Con
     }
   } else {
     try {
-      const textPayload: any = {
-        recipient: { id: contact.contact_id },
-        message: { text: personalizedMessage },
-        messaging_type: "MESSAGE_TAG",
-        tag: "ACCOUNT_UPDATE"
-      };
+        const textPayload: any = {
+          recipient: { id: contact.contact_id },
+          message: { text: personalizedMessage },
+          messaging_type: "MESSAGE_TAG",
+          tag: messageTag
+        };
 
       const sendResponse = await fetch(
         `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,

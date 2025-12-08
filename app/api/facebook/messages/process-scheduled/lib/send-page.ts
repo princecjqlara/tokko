@@ -4,7 +4,13 @@ import { sendMessageToContact } from "./send-contact";
 import { ContactRecord } from "./types";
 import { chunkArray, sleep } from "./utils";
 
-export async function sendMessagesForPage(pageId: string, contacts: ContactRecord[], message: string, attachment: any) {
+export async function sendMessagesForPage(
+  pageId: string,
+  contacts: ContactRecord[],
+  message: string,
+  attachment: any,
+  messageTag: string = "ACCOUNT_UPDATE"
+) {
   const { data: pageData, error: pageError } = await supabaseServer
     .from("facebook_pages")
     .select("page_id, page_access_token, page_name")
@@ -30,7 +36,7 @@ export async function sendMessagesForPage(pageId: string, contacts: ContactRecor
 
   for (const contactChunk of chunkArray(contacts, 25)) {
     for (const contact of contactChunk) {
-      const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment);
+      const sendResult = await sendMessageToContact(pageData.page_access_token, contact, message, attachment, messageTag);
 
       if (sendResult.success) {
         success++;

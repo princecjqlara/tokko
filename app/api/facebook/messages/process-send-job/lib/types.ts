@@ -4,6 +4,7 @@ export type SendJobRecord = {
   contact_ids: any;
   message: string;
   attachment?: any;
+  message_tag?: string;
   status: string;
   sent_count: number;
   failed_count: number;
