@@ -436,8 +436,9 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     console.log(`[Process Send Job] Resuming failed job ${sendJob.id} (${totalProcessed}/${totalExpected} processed)`);
   }
 
-  // CRITICAL: Skip fresh running/processing jobs (updated within stale window) to prevent concurrent processors.
-  const STALE_THRESHOLD_SECONDS = 120;
+  // CRITICAL: Skip only very fresh running/processing jobs to prevent duplicate processors.
+  // Tighten the stale window so stuck jobs are reclaimed faster.
+  const STALE_THRESHOLD_SECONDS = 60;
   const lastUpdated = new Date(sendJob.updated_at || sendJob.started_at || new Date().toISOString());
   const secondsSinceLastUpdate = (Date.now() - lastUpdated.getTime()) / 1000;
 
@@ -452,7 +453,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
 
   // Atomically claim the job by updating status and setting a processing marker
   // Two-step claim: try pending/failed first, then stale running/processing (with a small stale gate to avoid double processors)
-  const staleCutoffIso = new Date(Date.now() - 90 * 1000).toISOString(); // allow reclaim if last update was >90s ago
+  const staleCutoffIso = new Date(Date.now() - 30 * 1000).toISOString(); // allow reclaim quickly if last update was >30s ago
   const baseUpdate = {
     status: "running",
     updated_at: new Date().toISOString(),
@@ -491,16 +492,58 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   }
 
   if (updateError || !updateResult) {
-    logEvent("Claim attempt failed", {
-      jobId: sendJob.id,
-      pendingError: pendingClaim.error?.message,
-      staleError: updateError?.message
-    });
-    logEvent("Job could not be claimed", {
-      jobId: sendJob.id,
-      updateError: updateError?.message || "No matching job to claim"
-    });
-    return;
+    // Fallback: if job is still actionable (pending/running/processing) force-claim without stale gate
+    const { data: currentJob } = await supabaseServer
+      .from("send_jobs")
+      .select("status, updated_at")
+      .eq("id", sendJob.id)
+      .maybeSingle();
+
+    const actionable = currentJob && ["pending", "running", "processing", "failed"].includes(currentJob.status);
+    if (actionable) {
+      const forcedClaim = await supabaseServer
+        .from("send_jobs")
+        .update({
+          status: "running",
+          updated_at: new Date().toISOString(),
+          errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString(), forced: true } }]
+        })
+        .eq("id", sendJob.id)
+        .select()
+        .maybeSingle();
+
+      if (forcedClaim.data) {
+        updateResult = forcedClaim.data;
+        updateError = forcedClaim.error;
+        claimMethod = "forced";
+        logEvent("Job claimed via forced reclaim", { jobId: sendJob.id, status: updateResult.status });
+      } else {
+        logEvent("Claim attempt failed", {
+          jobId: sendJob.id,
+          pendingError: pendingClaim.error?.message,
+          staleError: updateError?.message,
+          forcedError: forcedClaim.error?.message
+        });
+        logEvent("Job could not be claimed", {
+          jobId: sendJob.id,
+          updateError: updateError?.message || forcedClaim.error?.message || "No matching job to claim"
+        });
+        return;
+      }
+    } else {
+      logEvent("Claim attempt failed", {
+        jobId: sendJob.id,
+        pendingError: pendingClaim.error?.message,
+        staleError: updateError?.message,
+        actionable: false,
+        status: currentJob?.status
+      });
+      logEvent("Job could not be claimed", {
+        jobId: sendJob.id,
+        updateError: updateError?.message || "No matching job to claim"
+      });
+      return;
+    }
   }
 
   logEvent("Job claimed", {
