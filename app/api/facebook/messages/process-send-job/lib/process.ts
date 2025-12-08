@@ -97,6 +97,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
         const elapsed = Date.now() - startTime;
         const chunkNumber = chunkIndex + 1;
         const chunk = pageChunks[chunkIndex];
+        const remainingContactIds = deduplicatedContacts.map(c => c.contact_id).filter(id => !sentContactIds.has(id));
 
         if (await isJobCancelled(claimedJob.id)) {
           await persistProgress({
@@ -105,7 +106,8 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
             messageSuccess,
             messageFailed,
             messageErrors,
-            sentContactIds
+            sentContactIds,
+            remainingContactIds
           });
           return;
         }
@@ -121,7 +123,8 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
             timeout: true,
             pageId,
             chunkNumber,
-            chunksTotal: pageChunks.length
+            chunksTotal: pageChunks.length,
+            remainingContactIds
           });
           return;
         }
@@ -154,6 +157,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
         }
 
         const nearTimeout = (Date.now() - startTime) > timeoutCutoff && chunkIndex < pageChunks.length - 1;
+        const remainingAfterChunk = deduplicatedContacts.map(c => c.contact_id).filter(id => !sentContactIds.has(id));
         await persistProgress({
           job: claimedJob,
           status: nearTimeout ? "running" : "running",
@@ -164,20 +168,23 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
           pageId,
           chunkNumber,
           chunksTotal: pageChunks.length,
-          timeout: nearTimeout
+          timeout: nearTimeout,
+          remainingContactIds: remainingAfterChunk
         });
 
         if (nearTimeout) return;
       }
     }
 
+    const remainingAfterAll = deduplicatedContacts.map(c => c.contact_id).filter(id => !sentContactIds.has(id));
     await finalizeJob({
       job: claimedJob,
       messageSuccess,
       messageFailed,
       messageErrors,
       totalExpected: effectiveTotal,
-      sentContactIds
+      sentContactIds,
+      remainingContactIds: remainingAfterAll
     });
   } catch (error: any) {
     logError(`Error processing send job ${claimedJob.id}`, error);

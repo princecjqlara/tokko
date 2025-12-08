@@ -13,6 +13,7 @@ type ProgressParams = {
   pageId?: string;
   chunkNumber?: number;
   chunksTotal?: number;
+  remainingContactIds?: string[];
 };
 
 type FinalizeParams = {
@@ -22,10 +23,23 @@ type FinalizeParams = {
   messageErrors: any[];
   totalExpected: number;
   sentContactIds: Set<string>;
+  remainingContactIds?: string[];
 };
 
 export async function persistProgress(params: ProgressParams) {
-  const { job, status, messageSuccess, messageFailed, messageErrors, sentContactIds, timeout, pageId, chunkNumber, chunksTotal } =
+  const {
+    job,
+    status,
+    messageSuccess,
+    messageFailed,
+    messageErrors,
+    sentContactIds,
+    timeout,
+    pageId,
+    chunkNumber,
+    chunksTotal,
+    remainingContactIds
+  } =
     params;
   const sentContactIdsArray = Array.from(sentContactIds);
   const actualErrors = messageErrors.filter((e: any) => !e._metadata);
@@ -56,10 +70,11 @@ export async function persistProgress(params: ProgressParams) {
 }
 
 export async function finalizeJob(params: FinalizeParams) {
-  const { job, messageSuccess, messageFailed, messageErrors, totalExpected, sentContactIds } = params;
+  const { job, messageSuccess, messageFailed, messageErrors, totalExpected, sentContactIds, remainingContactIds } = params;
   const totalProcessed = messageSuccess + messageFailed;
   const remainingContacts = totalExpected - totalProcessed;
   const sentContactIdsArray = Array.from(sentContactIds);
+  const remainingIds = remainingContactIds || [];
 
   if (await isJobCancelled(job.id)) return;
 
@@ -97,6 +112,7 @@ export async function finalizeJob(params: FinalizeParams) {
       sent_count: messageSuccess,
       failed_count: messageFailed,
       errors: errorsToPersist,
+      contact_ids: remainingIds,
       completed_at: finalStatus === "completed" ? new Date().toISOString() : null,
       updated_at: new Date().toISOString()
     })
