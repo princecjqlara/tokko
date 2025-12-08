@@ -106,6 +106,11 @@ export async function sendMessagesForPage(params: Params): Promise<PageSendResul
   for (let i = 0; i < contacts.length; i++) {
     const contact = contacts[i];
 
+    // Skip if this contact is already marked sent (from previous attempt)
+    if (contact.last_send_status === "sent") {
+      continue;
+    }
+
     if (localSentIds.has(contact.contact_id)) {
       continue;
     }

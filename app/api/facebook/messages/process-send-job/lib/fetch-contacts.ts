@@ -13,7 +13,7 @@ export async function fetchContactsForSendJob(userId: string, contactIds: (strin
 
     const { data: byId, error: idError } = await supabaseServer
       .from("contacts")
-      .select("id, contact_id, page_id, contact_name, page_name")
+      .select("id, contact_id, page_id, contact_name, page_name, last_send_status, last_send_job_id, last_send_at")
       .in("id", chunk)
       .eq("user_id", userId);
 
@@ -28,7 +28,7 @@ export async function fetchContactsForSendJob(userId: string, contactIds: (strin
 
     const { data: byContactId, error: contactIdError } = await supabaseServer
       .from("contacts")
-      .select("id, contact_id, page_id, contact_name, page_name")
+      .select("id, contact_id, page_id, contact_name, page_name, last_send_status, last_send_job_id, last_send_at")
       .in("contact_id", chunk)
       .eq("user_id", userId);
 
