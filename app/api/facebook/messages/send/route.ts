@@ -554,8 +554,10 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    // NEW LOGIC: Send TEXT first to ALL contacts, then MEDIA to ALL contacts
-    // This prevents issues with duplicate sends and ensures proper message ordering
+    // CRITICAL FIX: Send ONLY ONE message per contact to prevent duplicates
+    // - If attachment exists: Send ONLY the media (no separate text)
+    // - If no attachment: Send ONLY the text
+    // Facebook Messenger API doesn't support text+media in one message, so we must choose one
 
     // Group contacts by page
     const contactsByPage = new Map<string, any[]>();
@@ -568,9 +570,7 @@ export async function POST(request: NextRequest) {
     }
 
     // Track which contacts we've already sent to (prevents duplicates within this request)
-    // Use string keys for consistency (contact_id can be string or number)
     const sentTextToContacts = new Set<string>();
-    const sentMediaToContacts = new Set<string>();
 
     const results = {
       success: 0,
@@ -581,9 +581,10 @@ export async function POST(request: NextRequest) {
 
     // Track start time for timeout protection
     const startTime = Date.now();
-    const VERCEL_TIMEOUT = 280000; // 280 seconds
+    const VERCEL_TIMEOUT = 280000; // 280 seconds (leave 20s buffer before 300s limit)
 
     console.log(`[Send Message API] Starting send operation for ${contacts.length} contacts across ${contactsByPage.size} pages`);
+    console.log(`[Send Message API] Mode: ${attachment && attachment.url ? 'MEDIA-ONLY' : 'TEXT-ONLY'}`);
 
     if (contacts.length === 0) {
       console.error(`[Send Message API] ⚠️ CRITICAL: No contacts to send to!`);
@@ -599,13 +600,13 @@ export async function POST(request: NextRequest) {
       }, { status: 400 });
     }
 
-    // STEP 1: Send TEXT messages to ALL contacts first
-    console.log(`[Send Message API] STEP 1: Sending TEXT to all contacts...`);
+    // Process each page
     for (const [pageId, pageContacts] of contactsByPage.entries()) {
       console.log(`[Send Message API] Processing page ${pageId} with ${pageContacts.length} contacts`);
+
       // Check timeout
       if (Date.now() - startTime > VERCEL_TIMEOUT) {
-        console.warn(`[Send Message API] Timeout approaching during TEXT phase`);
+        console.warn(`[Send Message API] Timeout approaching, stopping`);
         break;
       }
 
@@ -628,7 +629,7 @@ export async function POST(request: NextRequest) {
 
       const pageAccessToken = pageData.page_access_token;
 
-      // Send TEXT to each contact on this page
+      // Send message to each contact on this page
       for (const contact of pageContacts) {
         // Skip contacts without contact_id (can't send without it)
         if (!contact.contact_id) {
@@ -642,11 +643,10 @@ export async function POST(request: NextRequest) {
           continue;
         }
 
-        // CRITICAL: Skip if already sent text to this contact (check BEFORE processing)
-        // Convert to string for consistent Set comparison
+        // CRITICAL: Skip if already sent to this contact (check BEFORE processing)
         const contactIdStr = String(contact.contact_id);
         if (sentTextToContacts.has(contactIdStr)) {
-          console.warn(`[Send Message API] ⚠️ DUPLICATE PREVENTION: Skipping duplicate TEXT send to ${contact.contact_name} (contact_id: ${contact.contact_id})`);
+          console.warn(`[Send Message API] ⚠️ DUPLICATE PREVENTION: Skipping duplicate send to ${contact.contact_name} (contact_id: ${contact.contact_id})`);
           continue;
         }
 
@@ -654,118 +654,16 @@ export async function POST(request: NextRequest) {
         sentTextToContacts.add(contactIdStr);
 
         try {
-          // Replace {FirstName} placeholder
-          let personalizedMessage = message;
-          const firstName = contact.contact_name?.split(' ')[0] || 'there';
-          personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
+          let payload: any;
+          let messageType: string;
 
-          console.log(`[Send Message API] Sending TEXT to ${contact.contact_name} (${contact.contact_id})...`);
-
-          const textPayload = {
-            recipient: { id: contact.contact_id },
-            message: { text: personalizedMessage },
-            messaging_type: "MESSAGE_TAG",
-            tag: "ACCOUNT_UPDATE"
-          };
-
-          const response = await fetch(
-            `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-            {
-              method: "POST",
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(textPayload),
-            }
-          );
-
-          const data = await response.json();
-
-          if (response.ok && !data.error) {
-            results.success++;
-            console.log(`✅ Sent TEXT to ${contact.contact_name} (${contact.contact_id})`);
-          } else {
-            // Remove from sent set if send failed (allow retry)
-            sentTextToContacts.delete(String(contact.contact_id));
-            results.failed++;
-            const errorMsg = data.error?.message || "Unknown error";
-            console.error(`❌ Failed TEXT to ${contact.contact_name} (${contact.contact_id}): ${errorMsg}`);
-            results.errors.push({
-              contact: contact.contact_name,
-              page: contact.page_name,
-              error: errorMsg
-            });
-          }
-
-          // Rate limiting (50ms for faster processing)
-          await new Promise(resolve => setTimeout(resolve, 50));
-        } catch (error: any) {
-          // Remove from sent set on error (allow retry)
-          sentTextToContacts.delete(String(contact.contact_id));
-          results.failed++;
-          console.error(`❌ Error sending TEXT to ${contact.contact_name} (${contact.contact_id}):`, error);
-          results.errors.push({
-            contact: contact.contact_name,
-            page: contact.page_name,
-            error: error.message || "Unknown error"
-          });
-        }
-      }
-    }
-
-    console.log(`[Send Message API] TEXT phase complete: ${sentTextToContacts.size} sent`);
-
-    // STEP 2: Send MEDIA to ALL contacts (only if attachment exists)
-    if (attachment && attachment.url) {
-      console.log(`[Send Message API] STEP 2: Sending MEDIA to all contacts...`);
-
-      for (const [pageId, pageContacts] of contactsByPage.entries()) {
-        // Check timeout
-        if (Date.now() - startTime > VERCEL_TIMEOUT) {
-          console.warn(`[Send Message API] Timeout approaching during MEDIA phase`);
-          break;
-        }
-
-        // Get page access token
-        const { data: pageData } = await supabaseServer
-          .from("facebook_pages")
-          .select("page_id, page_access_token")
-          .eq("page_id", pageId)
-          .maybeSingle();
-
-        if (!pageData?.page_access_token) {
-          continue; // Already logged error in TEXT phase
-        }
-
-        const pageAccessToken = pageData.page_access_token;
-        const attachmentType = attachment.type || "file";
-
-        // Send MEDIA to each contact on this page
-        for (const contact of pageContacts) {
-          // Skip contacts without contact_id
-          if (!contact.contact_id) {
-            continue; // Already logged error in TEXT phase
-          }
-
-          // CRITICAL: Skip if already sent media to this contact (check BEFORE processing)
-          // Also skip if we haven't sent text to this contact (text must come first)
-          const contactIdStr = String(contact.contact_id);
-          if (sentMediaToContacts.has(contactIdStr)) {
-            console.warn(`[Send Message API] ⚠️ DUPLICATE PREVENTION: Skipping duplicate MEDIA send to ${contact.contact_name} (contact_id: ${contact.contact_id})`);
-            continue;
-          }
-
-          // Skip if text wasn't sent (media should only be sent after successful text)
-          if (!sentTextToContacts.has(contactIdStr)) {
-            console.warn(`[Send Message API] ⚠️ Skipping MEDIA for ${contact.contact_name} - text was not sent first`);
-            continue;
-          }
-
-          // Mark as processing IMMEDIATELY to prevent concurrent sends to same contact
-          sentMediaToContacts.add(contactIdStr);
-
-          try {
+          if (attachment && attachment.url) {
+            // SEND MEDIA ONLY (when attachment exists)
+            messageType = 'MEDIA';
+            const attachmentType = attachment.type || "file";
             console.log(`[Send Message API] Sending MEDIA to ${contact.contact_name} (${contact.contact_id})...`);
 
-            const mediaPayload = {
+            payload = {
               recipient: { id: contact.contact_id },
               message: {
                 attachment: {
@@ -779,39 +677,64 @@ export async function POST(request: NextRequest) {
               messaging_type: "MESSAGE_TAG",
               tag: "ACCOUNT_UPDATE"
             };
+          } else {
+            // SEND TEXT ONLY (when no attachment)
+            messageType = 'TEXT';
+            let personalizedMessage = message;
+            const firstName = contact.contact_name?.split(' ')[0] || 'there';
+            personalizedMessage = personalizedMessage.replace(/{FirstName}/g, firstName);
 
-            const response = await fetch(
-              `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-              {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify(mediaPayload),
-              }
-            );
+            console.log(`[Send Message API] Sending TEXT to ${contact.contact_name} (${contact.contact_id})...`);
 
-            const data = await response.json();
-
-            if (response.ok && !data.error) {
-              console.log(`✅ Sent MEDIA to ${contact.contact_name} (${contact.contact_id})`);
-            } else {
-              // Remove from sent set if send failed (allow retry)
-              sentMediaToContacts.delete(String(contact.contact_id));
-              const errorMsg = data.error?.message || "Unknown error";
-              console.error(`❌ Failed MEDIA to ${contact.contact_name} (${contact.contact_id}): ${errorMsg}`);
-              // Don't add to failed count since text was already counted
-            }
-
-            // Rate limiting
-            await new Promise(resolve => setTimeout(resolve, 100));
-          } catch (error: any) {
-            // Remove from sent set on error (allow retry)
-            sentMediaToContacts.delete(String(contact.contact_id));
-            console.error(`❌ Error sending MEDIA to ${contact.contact_name} (${contact.contact_id}):`, error);
+            payload = {
+              recipient: { id: contact.contact_id },
+              message: { text: personalizedMessage },
+              messaging_type: "MESSAGE_TAG",
+              tag: "ACCOUNT_UPDATE"
+            };
           }
+
+          const response = await fetch(
+            `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            }
+          );
+
+          const data = await response.json();
+
+          if (response.ok && !data.error) {
+            results.success++;
+            console.log(`✅ Sent ${messageType} to ${contact.contact_name} (${contact.contact_id})`);
+          } else {
+            // Remove from sent set if send failed (allow retry)
+            sentTextToContacts.delete(String(contact.contact_id));
+            results.failed++;
+            const errorMsg = data.error?.message || "Unknown error";
+            console.error(`❌ Failed ${messageType} to ${contact.contact_name} (${contact.contact_id}): ${errorMsg}`);
+            results.errors.push({
+              contact: contact.contact_name,
+              page: contact.page_name,
+              error: errorMsg
+            });
+          }
+
+          // Rate limiting (50ms for faster processing)
+          await new Promise(resolve => setTimeout(resolve, 50));
+        } catch (error: any) {
+          // Remove from sent set on error (allow retry)
+          sentTextToContacts.delete(String(contact.contact_id));
+          results.failed++;
+          console.error(`❌ Error sending to ${contact.contact_name} (${contact.contact_id}):`, error);
+          results.errors.push({
+            contact: contact.contact_name,
+            page: contact.page_name,
+            error: error.message || "Unknown error"
+          });
         }
       }
-
-      console.log(`[Send Message API] MEDIA phase complete: ${sentMediaToContacts.size} sent`);
     }
 
     console.log(`[Send Message API] Operation complete: ${results.success} success, ${results.failed} failed`);

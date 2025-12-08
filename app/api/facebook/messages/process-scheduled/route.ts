@@ -156,11 +156,16 @@ async function sendMessageToContact(pageAccessToken: string, contact: ContactRec
   const firstName = contact.contact_name?.split(" ")[0] || "there";
   const personalizedMessage = message.replace(/{FirstName}/g, firstName);
 
-  let firstError: string | null = null;
-  let attachmentSent = false;
+  let messageSent = false;
+  let lastError: string | null = null;
 
-  // Send attachment first if provided
+  // CRITICAL FIX: Send ONLY ONE message to prevent duplicates
+  // - If attachment exists: Send ONLY the media (no separate text)
+  // - If no attachment: Send ONLY the text
+  // Facebook Messenger API doesn't support text+media in one message, so we must choose one
+
   if (attachment && attachment.url) {
+    // SEND MEDIA ONLY (when attachment exists)
     try {
       const attachmentType = attachment.type || "file";
       const mediaPayload: any = {
@@ -188,44 +193,48 @@ async function sendMessageToContact(pageAccessToken: string, contact: ContactRec
       );
 
       const mediaData = await mediaResponse.json();
-      if (!mediaResponse.ok || mediaData.error) {
-        firstError = mediaData.error?.message || `Failed to send ${attachmentType}`;
+      if (mediaResponse.ok && !mediaData.error) {
+        messageSent = true;
       } else {
-        attachmentSent = true;
+        lastError = mediaData.error?.message || `Failed to send ${attachmentType}`;
       }
     } catch (error: any) {
-      firstError = error?.message || "Failed to send attachment";
+      lastError = error?.message || "Failed to send attachment";
     }
+  } else {
+    // SEND TEXT ONLY (when no attachment)
+    try {
+      const textPayload: any = {
+        recipient: { id: contact.contact_id },
+        message: { text: personalizedMessage },
+        messaging_type: "MESSAGE_TAG",
+        tag: "ACCOUNT_UPDATE"
+      };
 
-    await sleep(ATTACHMENT_THROTTLE_MS);
-  }
+      const sendResponse = await fetch(
+        `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(textPayload),
+        }
+      );
 
-  // Send text message
-  const textPayload: any = {
-    recipient: { id: contact.contact_id },
-    message: { text: personalizedMessage },
-    messaging_type: "MESSAGE_TAG",
-    tag: "ACCOUNT_UPDATE"
-  };
-
-  const sendResponse = await fetch(
-    `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(textPayload),
+      const sendData = await sendResponse.json();
+      if (sendResponse.ok && !sendData.error) {
+        messageSent = true;
+      } else {
+        lastError = sendData.error?.message || "Failed to send text";
+      }
+    } catch (error: any) {
+      lastError = error?.message || "Failed to send text";
     }
-  );
-
-  const sendData = await sendResponse.json();
-  if (sendResponse.ok && !sendData.error) {
-    return { success: true, attachmentSent };
   }
 
   return {
-    success: false,
-    attachmentSent,
-    error: sendData.error?.message || firstError || "Unknown error"
+    success: messageSent,
+    attachmentSent: attachment && attachment.url ? messageSent : false,
+    error: messageSent ? null : lastError
   };
 }
 
@@ -386,7 +395,7 @@ export async function GET(request: NextRequest) {
     const vercelSignature = request.headers.get("x-vercel-signature");
     const userAgent = request.headers.get("user-agent") || "";
     const cronSecret = process.env.CRON_SECRET;
-    
+
     // Log all headers for debugging (first time only)
     const allHeaders: Record<string, string | null> = {};
     request.headers.forEach((value, key) => {
@@ -400,32 +409,32 @@ export async function GET(request: NextRequest) {
       userAgent: userAgent.substring(0, 100),
       allHeaders: Object.keys(allHeaders)
     });
-    
+
     // Check if this is a Vercel Cron request
     // Vercel may send: x-vercel-cron header, x-vercel-signature, or specific User-Agent
     // Also, Vercel Cron typically doesn't send an Authorization header
-    const hasVercelHeaders = 
-      vercelCronHeader === "1" || 
+    const hasVercelHeaders =
+      vercelCronHeader === "1" ||
       vercelCronHeader !== null ||
       vercelSignature !== null;
-    
-    const hasVercelUserAgent = 
+
+    const hasVercelUserAgent =
       userAgent.toLowerCase().includes("vercel") ||
       userAgent.toLowerCase().includes("cron") ||
       userAgent.toLowerCase().includes("node-fetch") ||
       userAgent === ""; // Some cron services send no user agent
-    
+
     // Vercel Cron typically doesn't send Authorization headers
     // If there's no auth header, it's likely from Vercel Cron (or a manual test)
     const isVercelCron = hasVercelHeaders || (hasVercelUserAgent && !authHeader);
-    
+
     // Authentication logic:
     // - If CRON_SECRET is set, only block requests with invalid auth headers that are definitely NOT from Vercel
     // - If no CRON_SECRET is set, allow all requests
     // - Vercel Cron requests typically don't have auth headers, so we allow those when detected
     if (cronSecret) {
       const hasValidAuth = authHeader === `Bearer ${cronSecret}`;
-      
+
       // Only block if:
       // - An Authorization header was provided (suggests manual/API call)
       // - AND the token is invalid
@@ -449,7 +458,7 @@ export async function GET(request: NextRequest) {
       // Otherwise allow: valid auth token OR no auth header (likely Vercel Cron) OR Vercel headers detected
     }
     // If no CRON_SECRET, allow all requests (open for debugging - can be secured later)
-    
+
     console.log("[Process Scheduled] Request authorized", {
       isVercelCron,
       hasAuthHeader: !!authHeader,
@@ -479,7 +488,7 @@ export async function GET(request: NextRequest) {
       .lte("scheduled_for", oneMinuteFromNow) // Allow 1 minute buffer for processing
       .order("scheduled_for", { ascending: true })
       .limit(MAX_MESSAGES_PER_RUN);
-    
+
     if (pendingMessages && pendingMessages.length > 0) {
       console.log("[Process Scheduled] Found pending messages:", pendingMessages.map((m: any) => ({
         id: m.id,
@@ -500,12 +509,12 @@ export async function GET(request: NextRequest) {
 
     // Combine both results, prioritizing pending messages
     const scheduledMessages = [
-      ...(pendingMessages || []), 
+      ...(pendingMessages || []),
       ...(stuckMessages || [])
     ].slice(0, MAX_MESSAGES_PER_RUN); // Limit total for this run
-    
+
     const fetchError = pendingError || stuckError;
-    
+
     // Log if we found stuck messages
     if (stuckMessages && stuckMessages.length > 0) {
       console.log(`[Process Scheduled] Found ${stuckMessages.length} stuck message(s) in processing status`);
