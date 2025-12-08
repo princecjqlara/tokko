@@ -10,10 +10,20 @@ import { SendJobRecord } from "./lib/types";
 export const dynamic = "force-dynamic";
 export const maxDuration = 300; // keep in sync with ./lib/constants
 
+const CRON_TOKEN = process.env.CRON_JOB_TOKEN;
+
+function isAuthorizedCron(request: NextRequest) {
+  if (!CRON_TOKEN) return false;
+  const headerToken = request.headers.get("x-cron-job-token");
+  const queryToken = request.nextUrl.searchParams.get("token");
+  return headerToken === CRON_TOKEN || queryToken === CRON_TOKEN;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const session = await getServerSession(authOptions);
-    if (!session) {
+    const cronAllowed = isAuthorizedCron(request);
+    if (!session && !cronAllowed) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
@@ -22,14 +32,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "jobId is required" }, { status: 400 });
     }
 
-    const userId = (session.user as any).id;
-    const userAccessToken = (session as any).accessToken || null;
+    const userId = (session?.user as any)?.id;
+    const userAccessToken = (session as any)?.accessToken || null;
 
     const { data: sendJob, error } = await supabaseServer
       .from("send_jobs")
       .select("*")
       .eq("id", jobId)
-      .eq("user_id", userId)
+      .eq("user_id", userId || null)
       .maybeSingle();
 
     if (error || !sendJob) {
@@ -65,8 +75,14 @@ export async function GET(request: NextRequest) {
       userAgent === "";
 
     const isVercelCron = hasVercelHeaders || (hasVercelUserAgent && !authHeader);
+    const cronAllowed = isAuthorizedCron(request);
+    if (isVercelCron && !cronAllowed) {
+      logEvent("GET rejected: vercel cron disabled");
+      return NextResponse.json({ error: "Cron access disabled" }, { status: 403 });
+    }
+
     const session = await getServerSession(authOptions);
-    if (!isVercelCron && !session) {
+    if (!session && !cronAllowed) {
       logEvent("GET unauthorized", { isVercelCron, hasSession: !!session });
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }

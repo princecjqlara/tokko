@@ -12,6 +12,10 @@ export async function GET(request: NextRequest) {
     const { authorized, reason } = authorizeCronRequest(request.headers);
     const { isVercelCron, authHeader, vercelCronHeader, vercelSignature, userAgent } = isVercelCronRequest(request.headers);
 
+    if (isVercelCron) {
+      return NextResponse.json({ error: "Cron access disabled" }, { status: 403 });
+    }
+
     if (!authorized) {
       return NextResponse.json({ error: "Unauthorized", reason }, { status: 401 });
     }
