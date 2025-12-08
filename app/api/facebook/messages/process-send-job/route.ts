@@ -397,25 +397,47 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
   }
 
   // Atomically claim the job by updating status and setting a processing marker
-  // Only update if status hasn't changed (prevents race conditions)
+  // Two-step claim: try pending/failed first, then stale running/processing
   const staleCutoffIso = new Date(Date.now() - 120 * 1000).toISOString();
-  const { data: updateResult, error: updateError } = await supabaseServer
+  const baseUpdate = {
+    status: "running",
+    updated_at: new Date().toISOString(),
+    errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
+  };
+
+  let updateResult;
+  let updateError;
+
+  // Step 1: claim if pending/failed
+  const pendingClaim = await supabaseServer
     .from("send_jobs")
-    .update({
-      status: "running",
-      updated_at: new Date().toISOString(),
-      // Store processing ID in errors array as metadata to track which instance is processing
-      errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
-    })
+    .update(baseUpdate)
     .eq("id", sendJob.id)
-    .or(
-      `status.eq.pending,status.eq.failed,and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`
-    )
+    .in("status", ["pending", "failed"])
     .select()
     .single();
 
+  if (pendingClaim.error || !pendingClaim.data) {
+    // Step 2: claim if stale running/processing
+    const staleClaim = await supabaseServer
+      .from("send_jobs")
+      .update(baseUpdate)
+      .eq("id", sendJob.id)
+      .or(`and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
+      .select()
+      .single();
+    updateResult = staleClaim.data;
+    updateError = staleClaim.error;
+  } else {
+    updateResult = pendingClaim.data;
+    updateError = pendingClaim.error;
+  }
+
   if (updateError || !updateResult) {
-    console.log(`[Process Send Job] Job ${sendJob.id} could not be claimed (may be picked up by another process), skipping`);
+    logEvent("Job could not be claimed", {
+      jobId: sendJob.id,
+      updateError: updateError?.message
+    });
     return;
   }
 
