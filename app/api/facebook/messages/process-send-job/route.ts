@@ -445,7 +445,6 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     updated_at: new Date().toISOString(),
     errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
   };
-  const claimGuardTimestamp = sendJob.updated_at || sendJob.started_at || null;
 
   let updateResult;
   let updateError;
@@ -456,7 +455,6 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     .from("send_jobs")
     .update(baseUpdate)
     .eq("id", sendJob.id)
-    .eq("updated_at", claimGuardTimestamp)
     .in("status", ["pending", "failed"])
     .select()
     .maybeSingle(); // maybeSingle avoids errors when no rows are updated
@@ -467,7 +465,6 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
       .from("send_jobs")
       .update(baseUpdate)
       .eq("id", sendJob.id)
-      .eq("updated_at", claimGuardTimestamp)
       .or(`and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
       .select()
       .maybeSingle(); // return null if nothing matched
