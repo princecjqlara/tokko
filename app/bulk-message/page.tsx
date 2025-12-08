@@ -1085,7 +1085,8 @@ export default function BulkMessagePage() {
                 // 2. User has never fetched before (no localStorage flag), OR
                 // 3. No contacts exist in database AND no contacts loaded in UI
                 const hasContacts = existingCount > 0 || contacts.length > 0;
-                const allowAutoFetch = shouldReconnect || (!storedHasFetched && !hasContacts) || (existingCount === 0 && contacts.length === 0);
+                // DISABLED: Auto-sync removed - users must click "Sync Contacts" manually
+                const allowAutoFetch = false;
 
                 if (shouldReconnect) {
                     console.log("[Frontend] Reconnecting to active job...");
