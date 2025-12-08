@@ -55,7 +55,8 @@ export async function loadContactsFromDb(userId: string, limit?: number | null, 
     if (data && data.length > 0) {
       allContacts.push(...data);
       from += PAGE_SIZE;
-      hasMore = data.length === PAGE_SIZE || (totalCount && allContacts.length < totalCount);
+      const countVal = typeof totalCount === "number" ? totalCount : null;
+      hasMore = data.length === PAGE_SIZE || (countVal !== null && allContacts.length < countVal);
     } else {
       hasMore = false;
     }
