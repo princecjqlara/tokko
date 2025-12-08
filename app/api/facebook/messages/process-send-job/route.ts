@@ -438,7 +438,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
 
   // CRITICAL: Skip only very fresh running/processing jobs to prevent duplicate processors.
   // Tighten the stale window so stuck jobs are reclaimed faster.
-  const STALE_THRESHOLD_SECONDS = 60;
+  const STALE_THRESHOLD_SECONDS = 30;
   const lastUpdated = new Date(sendJob.updated_at || sendJob.started_at || new Date().toISOString());
   const secondsSinceLastUpdate = (Date.now() - lastUpdated.getTime()) / 1000;
 
@@ -451,150 +451,32 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     return;
   }
 
-  // Atomically claim the job by updating status and setting a processing marker
-  // Two-step claim: try pending/failed first, then stale running/processing (with a small stale gate to avoid double processors)
-  const staleCutoffIso = new Date(Date.now() - 30 * 1000).toISOString(); // allow reclaim quickly if last update was >30s ago
-  const baseUpdate = {
-    status: "running",
-    updated_at: new Date().toISOString(),
-    errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString() } }]
-  };
-
-  let updateResult;
-  let updateError;
-  let claimMethod = "none";
-
-  // Step 1: claim if pending/failed
-  const pendingClaim = await supabaseServer
+  // Simple claim: grab pending/failed or stale running/processing (>30s)
+  const staleCutoffIso = new Date(Date.now() - 30 * 1000).toISOString();
+  const claim = await supabaseServer
     .from("send_jobs")
-    .update(baseUpdate)
+    .update({
+      status: "running",
+      updated_at: new Date().toISOString()
+    })
     .eq("id", sendJob.id)
-    .in("status", ["pending", "failed"])
+    .or(`status.eq.pending,status.eq.failed,and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
     .select()
-    .maybeSingle(); // maybeSingle avoids errors when no rows are updated
+    .maybeSingle();
 
-  if (pendingClaim.error || !pendingClaim.data) {
-    // Step 2: claim if stale running/processing
-    const staleClaim = await supabaseServer
-      .from("send_jobs")
-      .update(baseUpdate)
-      .eq("id", sendJob.id)
-      .or(`and(status.eq.running,updated_at.lte.${staleCutoffIso}),and(status.eq.processing,updated_at.lte.${staleCutoffIso})`)
-      .select()
-      .maybeSingle(); // return null if nothing matched
-    updateResult = staleClaim.data;
-    updateError = staleClaim.error;
-    claimMethod = "stale-running/processing";
-  } else {
-    updateResult = pendingClaim.data;
-    updateError = pendingClaim.error;
-    claimMethod = "pending/failed";
-  }
-
-  if (updateError || !updateResult) {
-    // Fallback: if job is still actionable (pending/running/processing) force-claim without stale gate
-    const { data: currentJob } = await supabaseServer
-      .from("send_jobs")
-      .select("status, updated_at")
-      .eq("id", sendJob.id)
-      .maybeSingle();
-
-    const actionable = currentJob && ["pending", "running", "processing", "failed"].includes(currentJob.status);
-    if (actionable) {
-      const forcedClaim = await supabaseServer
-        .from("send_jobs")
-        .update({
-          status: "running",
-          updated_at: new Date().toISOString(),
-          errors: [...(sendJob.errors || []).filter((e: any) => !e._processing), { _processing: { id: processingId, started: new Date().toISOString(), forced: true } }]
-        })
-        .eq("id", sendJob.id)
-        .select()
-        .maybeSingle();
-
-      if (forcedClaim.data) {
-        updateResult = forcedClaim.data;
-        updateError = forcedClaim.error;
-        claimMethod = "forced";
-        logEvent("Job claimed via forced reclaim", { jobId: sendJob.id, status: updateResult.status });
-      } else {
-        logEvent("Claim attempt failed", {
-          jobId: sendJob.id,
-          pendingError: pendingClaim.error?.message,
-          staleError: updateError?.message,
-          forcedError: forcedClaim.error?.message
-        });
-        logEvent("Job could not be claimed", {
-          jobId: sendJob.id,
-          updateError: updateError?.message || forcedClaim.error?.message || "No matching job to claim"
-        });
-        return;
-      }
-    } else {
-      logEvent("Claim attempt failed", {
-        jobId: sendJob.id,
-        pendingError: pendingClaim.error?.message,
-        staleError: updateError?.message,
-        actionable: false,
-        status: currentJob?.status
-      });
-      logEvent("Job could not be claimed", {
-        jobId: sendJob.id,
-        updateError: updateError?.message || "No matching job to claim"
-      });
-      return;
-    }
+  if (claim.error || !claim.data) {
+    logEvent("Job could not be claimed", {
+      jobId: sendJob.id,
+      updateError: claim.error?.message || "No matching job to claim"
+    });
+    return;
   }
 
   logEvent("Job claimed", {
     jobId: sendJob.id,
-    claimMethod,
-    status: updateResult.status,
-    updated_at: updateResult.updated_at
+    status: claim.data.status,
+    updated_at: claim.data.updated_at
   });
-
-  // Wait a moment and verify we still own the job
-  await sleep(500);
-
-  const { data: verifyJob } = await supabaseServer
-    .from("send_jobs")
-    .select("*")
-    .eq("id", sendJob.id)
-    .single();
-
-  if (verifyJob) {
-    // Check if our processing ID is still in the errors array
-    const processingMarker = (verifyJob.errors || []).find((e: any) => e._processing?.id === processingId);
-    if (!processingMarker) {
-      console.log(`[Process Send Job] Job ${sendJob.id} was claimed by another process, our processing ID ${processingId} not found. Skipping.`);
-      return;
-    }
-
-    // Check if job status changed (cancelled, completed, etc.)
-    if (verifyJob.status === "completed" || verifyJob.status === "cancelled") {
-      console.log(`[Process Send Job] Job ${sendJob.id} status changed to ${verifyJob.status}, skipping.`);
-      return;
-    }
-  }
-
-  console.log(`[Process Send Job] ✅ Successfully claimed job ${sendJob.id} with processing ID: ${processingId}`);
-
-  // Double-check timing to prevent race conditions
-  const jobUpdatedAt = new Date(updateResult.updated_at || updateResult.started_at);
-  const now = new Date();
-  const secondsSinceUpdate = (now.getTime() - jobUpdatedAt.getTime()) / 1000;
-
-  // If job was updated very recently (within 2 seconds) and we're not the one who updated it, skip
-  // This prevents race conditions where multiple cron jobs pick up the same job
-  if (secondsSinceUpdate < 2 && updateResult.status === "running") {
-    // Check if we're the one who just updated it by comparing timestamps
-    const ourUpdateTime = new Date().toISOString();
-    const timeDiff = Math.abs(new Date(ourUpdateTime).getTime() - jobUpdatedAt.getTime());
-    if (timeDiff > 1000) { // More than 1 second difference means another process updated it
-      console.log(`[Process Send Job] Job ${sendJob.id} was just picked up by another process (${secondsSinceUpdate.toFixed(2)}s ago), skipping to prevent duplicate processing`);
-      return;
-    }
-  }
 
   try {
     const contactIds = coerceContactIds(sendJob.contact_ids);
@@ -1172,3 +1054,5 @@ export async function GET(request: NextRequest) {
     );
   }
 }
+
+
