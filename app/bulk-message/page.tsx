@@ -3,10 +3,30 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useIcons } from "./hooks/useIcons";
+import { useSendBroadcast } from "./hooks/useSendBroadcast";
 
 export default function BulkMessagePage() {
     const { data: session, status } = useSession();
     const icons = useIcons();
+    const {
+        activeSends,
+        isUploadingFile,
+        setIsUploadingFile,
+        scheduledNotice,
+        setScheduledNotice,
+        isCancellingSchedule,
+        setIsCancellingSchedule,
+        setActiveSends,
+        isSendingRef,
+        sendAbortControllerRef,
+        lastSendRequestIdRef,
+        sendBroadcast
+    } = useSendBroadcast({
+        onBackground: (jobId, total) => alert(`Sending ${total} messages. Job ${jobId} created.`),
+        onScheduled: notice => setScheduledNotice(notice),
+        onSuccess: (sent, failed) => alert(`Successfully sent ${sent} message(s)!${failed > 0 ? `\n${failed} failed.` : ''}`),
+        onError: message => alert(message || "Failed to send messages")
+    });
     const [tags, setTags] = useState(["All"]);
     const [selectedTag, setSelectedTag] = useState("All");
     const [selectedPage, setSelectedPage] = useState("All Pages");
@@ -24,15 +44,11 @@ export default function BulkMessagePage() {
     const [connectedPageIds, setConnectedPageIds] = useState<string[]>([]); // All pages are automatically connected
     const [isClient, setIsClient] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
-    const [activeSends, setActiveSends] = useState(0);
-    const [isUploadingFile, setIsUploadingFile] = useState(false); // Track file upload state
     const [scheduleDate, setScheduleDate] = useState("");
     const [attachedFile, setAttachedFile] = useState<File | null>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [showProfileDropdown, setShowProfileDropdown] = useState(false);
     const profileDropdownRef = useRef<HTMLDivElement>(null);
-    const [scheduledNotice, setScheduledNotice] = useState<{ id: number; scheduledFor: string; total: number } | null>(null);
-    const [isCancellingSchedule, setIsCancellingSchedule] = useState(false);
 
 
     // Real-time fetching state
@@ -64,9 +80,6 @@ export default function BulkMessagePage() {
     const isLoadingContactsRef = useRef(false); // Prevent multiple simultaneous contact loads
     const lastContactLoadTimeRef = useRef<number>(0); // Track last contact load time to prevent rapid successive loads
     const contactLoadTimeoutRef = useRef<NodeJS.Timeout | null>(null); // Track debounce timeout
-    const isSendingRef = useRef(false); // Track if a send is in progress (prevents race conditions)
-    const sendAbortControllerRef = useRef<AbortController | null>(null); // AbortController for canceling sends
-    const lastSendRequestIdRef = useRef<string | null>(null); // Track last send request ID to prevent duplicates
 
     // Pagination State
     const [currentPage, setCurrentPage] = useState(1);
@@ -1712,323 +1725,32 @@ export default function BulkMessagePage() {
         }
     };
 
-    // Cancel ongoing send (both frontend and background jobs)
+        // Cancel ongoing send (both frontend and background jobs)
     const handleCancelSend = async () => {
         console.log("[Frontend] Cancel requested...");
-
-        // Cancel frontend fetch if in progress
         if (sendAbortControllerRef.current) {
-            console.log("[Frontend] Aborting frontend send operation...");
             sendAbortControllerRef.current.abort();
             sendAbortControllerRef.current = null;
         }
-
-
-
-        // Reset sending state
-        isSendingRef.current = false;
-        setActiveSends(0);
-
         alert("Message sending has been canceled.");
     };
 
-    // Send broadcast message
-    const handleSendBroadcast = async () => {
-        if (!message.trim()) {
-            alert("Please enter a message");
-            return;
-        }
-
-        if (selectedContactIds.length === 0) {
-            alert("Please select at least one contact");
-            return;
-        }
-
-        // CRITICAL: Use ref for immediate synchronous check (state updates are async)
-        if (isSendingRef.current) {
-            console.warn("[Frontend] Send already in progress (ref check), ignoring duplicate call");
-            return;
-        }
-
-        // Also check state as backup
-        if (activeSends > 0) {
-            console.warn("[Frontend] Send already in progress (state check), ignoring duplicate call. Active sends:", activeSends);
-            return;
-        }
-
-        // Mark as sending immediately (synchronous)
-        isSendingRef.current = true;
-
-        // Generate unique request ID to prevent duplicate processing
-        const requestId = `${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-        lastSendRequestIdRef.current = requestId;
-        console.log(`[Frontend] Starting send with request ID: ${requestId}`);
-
-        // Create AbortController for this send operation
-        sendAbortControllerRef.current = new AbortController();
-
-        // Increment active sends counter for UI
-        setActiveSends(prev => {
-            console.log("[Frontend] Starting send, incrementing activeSends from", prev, "to", prev + 1);
-            return prev + 1;
+    // Send broadcast message (delegated to hook)
+    const handleSendBroadcast = () => {
+        sendBroadcast({
+            selectedContactIds,
+            message,
+            scheduleDate,
+            attachedFile,
+            setMessage,
+            setSelectedContactIds,
+            setScheduleDate,
+            setAttachedFile,
+            fileInputRef
         });
-
-        try {
-            // Upload file if attached
-            let attachment = null;
-            if (attachedFile) {
-                setIsUploadingFile(true); // Disable button during upload
-                try {
-                    console.log("[Frontend] Uploading file:", attachedFile.name);
-                    // Upload file to storage
-                    const uploadFormData = new FormData();
-                    uploadFormData.append("file", attachedFile);
-
-                    const uploadResponse = await fetch("/api/upload", {
-                        method: "POST",
-                        body: uploadFormData,
-                    });
-
-                    // Check if response has content before parsing
-                    const contentType = uploadResponse.headers.get("content-type");
-                    let uploadData;
-
-                    if (contentType && contentType.includes("application/json")) {
-                        const text = await uploadResponse.text();
-                        if (!text || text.trim() === "") {
-                            throw new Error("Empty response from server");
-                        }
-                        try {
-                            uploadData = JSON.parse(text);
-                        } catch (parseError) {
-                            console.error("Failed to parse JSON response:", text);
-                            throw new Error(`Server returned invalid response: ${text.substring(0, 100)}`);
-                        }
-                    } else {
-                        const text = await uploadResponse.text();
-                        const statusText = uploadResponse.statusText || "Unknown";
-                        const status = uploadResponse.status || "Unknown";
-
-                        // Log full response for debugging
-                        console.error("Non-JSON response received:", {
-                            status,
-                            statusText,
-                            contentType,
-                            responseText: text.substring(0, 500),
-                            headers: Object.fromEntries(uploadResponse.headers.entries())
-                        });
-
-                        // Try to extract error message from HTML if it's an error page
-                        let errorMessage = `Server returned non-JSON response (Status: ${status} ${statusText})`;
-                        if (text) {
-                            // Try to find error message in HTML
-                            const errorMatch = text.match(/<title>(.*?)<\/title>/i) || text.match(/<h1>(.*?)<\/h1>/i);
-                            if (errorMatch) {
-                                errorMessage += `: ${errorMatch[1]}`;
-                            } else if (text.length < 200) {
-                                errorMessage += `: ${text}`;
-                            }
-                        }
-
-                        throw new Error(errorMessage);
-                    }
-
-                    if (!uploadResponse.ok || !uploadData.success) {
-                        throw new Error(uploadData.error || uploadData.details || "Failed to upload file");
-                    }
-
-                    // Set attachment with the uploaded URL and detected type
-                    attachment = {
-                        url: uploadData.url,
-                        type: uploadData.type || "file" // Type is determined by the upload API
-                    };
-                } catch (uploadError: any) {
-                    console.error("Error uploading file:", uploadError);
-                    alert(`Failed to upload file: ${uploadError.message || "Unknown error"}`);
-
-                    // CRITICAL: Reset sending state before early return
-                    // NOTE: Do NOT decrement activeSends here - the finally block will do it
-                    setIsUploadingFile(false);
-                    isSendingRef.current = false;
-                    // The finally block will decrement activeSends
-                    return;
-                } finally {
-                    setIsUploadingFile(false); // Always reset upload state
-                }
-            }
-
-            // Convert scheduleDate to Philippine time (UTC+8) if provided
-            let scheduleDateISO = null;
-            if (scheduleDate) {
-                // datetime-local gives us a string like "2024-01-01T14:00" without timezone
-                // We need to interpret this as Philippine time (UTC+8) and convert to UTC
-                // Parse the date string manually to avoid browser timezone interpretation
-                const [datePart, timePart] = scheduleDate.split('T');
-                const [year, month, day] = datePart.split('-').map(Number);
-                const [hours, minutes] = (timePart || '00:00').split(':').map(Number);
-
-                // Create a date object treating the input as Philippine time (UTC+8)
-                // Philippine time is UTC+8, so we subtract 8 hours to get UTC
-                const philippineDate = new Date(Date.UTC(year, month - 1, day, hours, minutes, 0, 0));
-                // Subtract 8 hours to convert from Philippine time (UTC+8) to UTC
-                const utcDate = new Date(philippineDate.getTime() - (8 * 60 * 60 * 1000));
-                scheduleDateISO = utcDate.toISOString();
-
-                console.log('[Schedule] Input:', scheduleDate, '→ Philippine time:', philippineDate.toISOString(), '→ UTC:', scheduleDateISO);
-            }
-
-            const response = await fetch("/api/facebook/messages/send", {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    "X-Request-ID": requestId, // Add request ID to headers
-                },
-                signal: sendAbortControllerRef.current?.signal,
-                body: JSON.stringify({
-                    contactIds: selectedContactIds,
-                    message: message.trim(),
-                    scheduleDate: scheduleDateISO,
-                    attachment: attachment
-                }),
-            });
-
-            // Check content-type before parsing JSON
-            const contentType = response.headers.get("content-type");
-            let data: any;
-
-            if (contentType && contentType.includes("application/json")) {
-                try {
-                    const text = await response.text();
-                    if (!text || text.trim() === "") {
-                        throw new Error("Empty response from server");
-                    }
-                    data = JSON.parse(text);
-                } catch (parseError: any) {
-                    console.error("Failed to parse JSON response:", parseError);
-                    // Note: response.text() was already called above, so we can't call it again
-                    // Use the parseError message instead
-                    const errorText = parseError.message || "Unknown error";
-                    throw new Error(`Server returned invalid JSON: ${errorText.substring(0, 100)}`);
-                }
-            } else {
-                // Non-JSON response (likely HTML error page from Vercel)
-                const text = await response.text();
-                const statusText = response.statusText || "Unknown";
-                const status = response.status || "Unknown";
-
-                console.error("Non-JSON response received from send API:", {
-                    status,
-                    statusText,
-                    contentType,
-                    responseText: text.substring(0, 500),
-                    headers: Object.fromEntries(response.headers.entries())
-                });
-
-                // Try to extract error message from HTML if it's an error page
-                let errorMessage = `Server returned non-JSON response (Status: ${status} ${statusText})`;
-                if (text) {
-                    // Try to find error message in HTML
-                    const errorMatch = text.match(/<title>(.*?)<\/title>/i) ||
-                        text.match(/<h1>(.*?)<\/h1>/i) ||
-                        text.match(/An error (occurred|o[^<]*)/i);
-                    if (errorMatch) {
-                        errorMessage = errorMatch[1] || errorMatch[0];
-                    } else if (text.length < 200) {
-                        errorMessage = text;
-                    } else {
-                        errorMessage = `Server error (${status} ${statusText}). Please try again.`;
-                    }
-                }
-
-                throw new Error(errorMessage);
-            }
-
-            // Debug logging
-            console.log("[Frontend] Send response:", {
-                ok: response.ok,
-                success: data.success,
-                hasResults: !!data.results,
-                backgroundJob: data.results?.backgroundJob,
-                scheduled: data.results?.scheduled,
-                partial: data.results?.partial,
-                sent: data.results?.sent,
-                failed: data.results?.failed,
-                total: data.results?.total,
-                error: data.error,
-                details: data.details
-            });
-
-            if (response.ok && data.success) {
-                if (data.results?.scheduled) {
-                    setScheduledNotice({
-                        id: data.results.scheduledMessageId,
-                        scheduledFor: data.results.scheduledFor,
-                        total: data.results.total || selectedContactIds.length || 0
-                    });
-                } else if (data.results?.backgroundJob) {
-                    // Background job created - just show simple message
-                    alert(`Sending ${data.results.total || selectedContactIds.length} messages. This may take a while for large batches.`);
-                } else if (data.results?.partial) {
-                    // Partial results due to timeout
-                    alert(`${data.results.message}\n\nSent: ${data.results.sent}\nFailed: ${data.results.failed}\nRemaining: ${data.results.total - data.results.sent - data.results.failed}`);
-                } else {
-                    // Only show success message if messages were actually sent
-                    if (data.results?.sent > 0 || data.results?.failed > 0) {
-                        alert(`Successfully sent ${data.results.sent} message(s)!${data.results.failed > 0 ? `\n${data.results.failed} failed.` : ''}`);
-                    } else {
-                        // If sent is 0 and no errors, something might be wrong
-                        console.warn("[Frontend] Received success response but 0 messages sent:", data);
-                        alert(`Message sending initiated, but no messages were sent yet. This may be a background job. Please check the job status.`);
-                    }
-                }
-            } else {
-                // Handle error response
-                // Special handling for duplicate requests (409)
-                if (response.status === 409) {
-                    console.log("[Frontend] Duplicate request detected by server, ignoring");
-                    // Don't show error to user, just silently ignore
-                    return;
-                }
-
-                const errorMsg = data.error || data.details || "Unknown error";
-                alert(`Failed to send messages: ${errorMsg}`);
-            }
-        } catch (error: any) {
-            // Check if error is due to abort
-            if (error.name === 'AbortError') {
-                console.log("[Frontend] Send operation was canceled by user");
-                // Don't show alert, user initiated the cancel
-            } else {
-                console.error("Error sending broadcast:", error);
-                alert(`Error: ${error.message || "Failed to send messages"}`);
-            }
-        } finally {
-            // Reset ref and abort controller immediately (synchronous)
-            isSendingRef.current = false;
-            sendAbortControllerRef.current = null;
-            lastSendRequestIdRef.current = null;
-
-            setActiveSends(prev => {
-                const newCount = prev - 1;
-                console.log("[Frontend] Send completed, decrementing activeSends from", prev, "to", newCount);
-
-                // Clear form only if this was the last active send
-                if (newCount === 0) {
-                    setMessage("");
-                    setSelectedContactIds([]);
-                    setScheduleDate("");
-                    setAttachedFile(null);
-                    setScheduledNotice(null);
-                    if (fileInputRef.current) {
-                        fileInputRef.current.value = "";
-                    }
-                }
-                return newCount;
-            });
-        }
     };
 
-    const isPageSelected = paginatedContacts.length > 0 && paginatedContacts.every(c => {
+const isPageSelected = paginatedContacts.length > 0 && paginatedContacts.every(c => {
         const contactId = c.id || c.contact_id || c.contactId;
         return contactId && selectedContactIds.includes(contactId);
     });
@@ -3293,4 +3015,5 @@ export default function BulkMessagePage() {
         </div>
     );
 }
+
 
