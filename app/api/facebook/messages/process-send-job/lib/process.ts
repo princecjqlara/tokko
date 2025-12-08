@@ -81,6 +81,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
       }
       contactsByPage.get(contact.page_id)!.push(contact);
     }
+    const allContactDbIds = deduplicatedContacts.map(c => c.id).filter(Boolean) as number[];
 
     let messageSuccess = claimedJob.sent_count || 0;
     let messageFailed = claimedJob.failed_count || 0;
@@ -98,6 +99,7 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
         const chunkNumber = chunkIndex + 1;
         const chunk = pageChunks[chunkIndex];
         const pendingContactIds = deduplicatedContacts.map(c => c.contact_id).filter(id => !sentContactIds.has(id));
+        const clearStatusIds = chunk.map(c => c.id).filter(Boolean) as number[];
 
         if (await isJobCancelled(claimedJob.id)) {
           await persistProgress({
@@ -107,7 +109,8 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
             messageFailed,
             messageErrors,
             sentContactIds,
-            pendingContactIds
+            pendingContactIds,
+            clearStatusIds
           });
           return;
         }
@@ -124,7 +127,8 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
             pageId,
             chunkNumber,
             chunksTotal: pageChunks.length,
-            pendingContactIds
+            pendingContactIds,
+            clearStatusIds
           });
           return;
         }
@@ -169,7 +173,8 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
           chunkNumber,
           chunksTotal: pageChunks.length,
           timeout: nearTimeout,
-          pendingContactIds: remainingAfterChunk
+          pendingContactIds: remainingAfterChunk,
+          clearStatusIds
         });
 
         if (nearTimeout) return;
@@ -184,15 +189,15 @@ export async function processSendJob({ job, userAccessToken }: ProcessParams) {
       messageErrors,
       totalExpected: effectiveTotal,
       sentContactIds,
-      pendingContactIds: remainingAfterAll
+      pendingContactIds: remainingAfterAll,
+      clearStatusIds: allContactDbIds
     });
 
     // Clear per-contact status flags once broadcast is done
     try {
-      const contactDbIds = deduplicatedContacts.map(c => c.id).filter(Boolean);
       const CHUNK = 1000;
-      for (let i = 0; i < contactDbIds.length; i += CHUNK) {
-        const idsChunk = contactDbIds.slice(i, i + CHUNK);
+      for (let i = 0; i < allContactDbIds.length; i += CHUNK) {
+        const idsChunk = allContactDbIds.slice(i, i + CHUNK);
         await supabaseServer
           .from("contacts")
           .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })

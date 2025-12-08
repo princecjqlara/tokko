@@ -14,6 +14,7 @@ type ProgressParams = {
   chunkNumber?: number;
   chunksTotal?: number;
   pendingContactIds?: string[];
+  clearStatusIds?: number[];
 };
 
 type FinalizeParams = {
@@ -24,6 +25,7 @@ type FinalizeParams = {
   totalExpected: number;
   sentContactIds: Set<string>;
   pendingContactIds?: string[];
+  clearStatusIds?: number[];
 };
 
 export async function persistProgress(params: ProgressParams) {
@@ -38,7 +40,8 @@ export async function persistProgress(params: ProgressParams) {
     pageId,
     chunkNumber,
     chunksTotal,
-    pendingContactIds
+    pendingContactIds,
+    clearStatusIds
   } =
     params;
   const sentContactIdsArray = Array.from(sentContactIds);
@@ -70,10 +73,22 @@ export async function persistProgress(params: ProgressParams) {
       status
     })
     .eq("id", job.id);
+
+  // Clear per-contact status if the job was cancelled or timed out
+  if (clearStatusIds && clearStatusIds.length > 0 && (status === "cancelled" || timeout)) {
+    const CHUNK = 500;
+    for (let i = 0; i < clearStatusIds.length; i += CHUNK) {
+      const chunk = clearStatusIds.slice(i, i + CHUNK);
+      await supabaseServer
+        .from("contacts")
+        .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+        .in("id", chunk);
+    }
+  }
 }
 
 export async function finalizeJob(params: FinalizeParams) {
-  const { job, messageSuccess, messageFailed, messageErrors, totalExpected, sentContactIds, pendingContactIds } = params;
+  const { job, messageSuccess, messageFailed, messageErrors, totalExpected, sentContactIds, pendingContactIds, clearStatusIds } = params;
   const totalProcessed = messageSuccess + messageFailed;
   const remainingContacts = totalExpected - totalProcessed;
   const sentContactIdsArray = Array.from(sentContactIds);
@@ -121,4 +136,16 @@ export async function finalizeJob(params: FinalizeParams) {
       updated_at: new Date().toISOString()
     })
     .eq("id", job.id);
+
+  // Clear per-contact status when the job is done (completed or running with remaining)
+  if (clearStatusIds && clearStatusIds.length > 0) {
+    const CHUNK = 500;
+    for (let i = 0; i < clearStatusIds.length; i += CHUNK) {
+      const chunk = clearStatusIds.slice(i, i + CHUNK);
+      await supabaseServer
+        .from("contacts")
+        .update({ last_send_status: null, last_send_job_id: null, last_send_at: null })
+        .in("id", chunk);
+    }
+  }
 }
