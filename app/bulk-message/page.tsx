@@ -4,6 +4,7 @@ import React, { useState, useMemo, useEffect, useRef } from "react";
 import { signIn, signOut, useSession } from "next-auth/react";
 import { useIcons } from "./hooks/useIcons";
 import { useSendBroadcast } from "./hooks/useSendBroadcast";
+import { useContactFilters } from "./hooks/useContactFilters";
 
 export default function BulkMessagePage() {
     const { data: session, status } = useSession();
@@ -1353,31 +1354,27 @@ export default function BulkMessagePage() {
         );
     }, [fetchingProgress.totalContacts, fetchingProgress.isFetching, contacts.length]);
 
-    // Filter contacts - show contacts from all connected pages by default, or filter by selected page
-    // Uses debounced search query for better performance with large datasets (50k+ contacts)
-    const filteredContacts = useMemo(() => {
-        return contacts.filter((contact) => {
-            const matchesTag = selectedTag === "All" || (contact.tags && contact.tags.includes(selectedTag));
-
-            // Page filtering: "All Pages" shows everything, otherwise filter by selected page
-            // Check both contact.page and contact.page_name for compatibility
-            const contactPageName = contact.page || contact.page_name || contact.pageName;
-            const matchesPage = selectedPage === "All Pages" || contactPageName === selectedPage;
-
-            // Use debounced search query for better performance
-            const searchLower = debouncedSearchQuery.toLowerCase();
-            const matchesSearch = !debouncedSearchQuery ||
-                contact.name?.toLowerCase().includes(searchLower) ||
-                contact.role?.toLowerCase().includes(searchLower);
-
-            // Date filtering: Match if contact has activity (message or conversation) on that date
-            // Use lastContactMessageDate if available (contact sent message), otherwise use date (conversation date)
-            const contactMessageDate = contact.lastContactMessageDate || contact.date;
-            const matchesDate = !dateFilter || contactMessageDate === dateFilter;
-
-            return matchesTag && matchesSearch && matchesPage && matchesDate;
-        });
-    }, [selectedTag, selectedPage, debouncedSearchQuery, dateFilter, contacts, tags]);
+    const {
+        filteredContacts,
+        paginatedContacts,
+        totalPages,
+        isPageSelected,
+        isAllFilteredSelected,
+        toggleSelection,
+        toggleSelectPage,
+        selectAllFiltered,
+        clearSelection
+    } = useContactFilters({
+        contacts,
+        selectedTag,
+        selectedPage,
+        debouncedSearchQuery,
+        dateFilter,
+        selectedContactIds,
+        setSelectedContactIds,
+        currentPage,
+        itemsPerPage
+    });
 
     // Update pages list from contacts when contacts change
     useEffect(() => {
@@ -1390,13 +1387,6 @@ export default function BulkMessagePage() {
         });
         setPages(Array.from(uniquePages).sort());
     }, [contacts]);
-
-    // Pagination Logic
-    const totalPages = Math.ceil(filteredContacts.length / itemsPerPage);
-    const paginatedContacts = filteredContacts.slice(
-        (currentPage - 1) * itemsPerPage,
-        currentPage * itemsPerPage
-    );
 
     // Modal computed values
     const filteredAvailablePages = useMemo(() => {
@@ -1485,35 +1475,6 @@ export default function BulkMessagePage() {
     };
 
     // Handlers
-    const toggleSelection = (id: string | number | undefined | null) => {
-        if (!id) return;
-        setSelectedContactIds((prev) =>
-            prev.includes(id) ? prev.filter((cid) => cid !== id) : [...prev, id]
-        );
-    };
-
-    // Select Page (only visible contacts)
-    const toggleSelectPage = () => {
-        const pageIds = paginatedContacts.map(c => c.id || c.contact_id || c.contactId).filter(id => id !== undefined && id !== null);
-        const isPageSelected = pageIds.length > 0 && pageIds.every(id => selectedContactIds.includes(id));
-
-        if (isPageSelected) {
-            setSelectedContactIds(prev => prev.filter(id => !pageIds.includes(id)));
-        } else {
-            setSelectedContactIds(prev => [...new Set([...prev, ...pageIds])]);
-        }
-    };
-
-    // Select All (all filtered contacts)
-    const selectAllFiltered = () => {
-        const allIds = filteredContacts.map(c => c.id || c.contact_id || c.contactId);
-        setSelectedContactIds(allIds.filter(id => id !== undefined && id !== null));
-    };
-
-    const clearSelection = () => {
-        setSelectedContactIds([]);
-    };
-
     const handleDelete = async () => {
         if (selectedContactIds.length === 0) {
             alert("Please select contacts to delete");
@@ -1749,15 +1710,6 @@ export default function BulkMessagePage() {
             fileInputRef
         });
     };
-
-const isPageSelected = paginatedContacts.length > 0 && paginatedContacts.every(c => {
-        const contactId = c.id || c.contact_id || c.contactId;
-        return contactId && selectedContactIds.includes(contactId);
-    });
-    const isAllFilteredSelected = filteredContacts.length > 0 && filteredContacts.every(c => {
-        const contactId = c.id || c.contact_id || c.contactId;
-        return contactId && selectedContactIds.includes(contactId);
-    });
 
     const handleCancelScheduled = async () => {
         if (!scheduledNotice) return;
