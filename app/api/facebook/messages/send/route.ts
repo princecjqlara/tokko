@@ -11,6 +11,10 @@ export const dynamic = "force-dynamic";
 // Threshold for using background jobs (to avoid timeout)
 const BACKGROUND_JOB_THRESHOLD = 100;
 
+// For extremely large sends, skip the expensive prefetch step and go straight to a background job
+// This avoids timeouts when contactIds is in the tens of thousands.
+const LARGE_SEND_FAST_PATH_THRESHOLD = Number(process.env.LARGE_SEND_FAST_PATH_THRESHOLD || "5000");
+
 // Supabase IN() query limit - chunk queries to avoid "Bad Request" errors
 const CONTACT_FETCH_CHUNK = 200;
 
@@ -106,6 +110,81 @@ export async function POST(request: NextRequest) {
     }
 
     console.log("[Send Message API] Fetching contacts with IDs:", contactIds);
+
+    // FAST PATH: For very large batches, immediately create a background job without prefetching contacts
+    // Prefetching 5k+ contacts can exceed function time limits; the job processor will fetch in chunks anyway.
+    if (!scheduleDate && contactIds.length > LARGE_SEND_FAST_PATH_THRESHOLD) {
+      console.log(`[Send Message API] Fast-path enabled for large batch (${contactIds.length} contacts > ${LARGE_SEND_FAST_PATH_THRESHOLD}). Creating background job without prefetch.`);
+
+      const dedupedContactIds = Array.from(new Set(contactIds));
+
+      const { data: sendJob, error: jobError } = await supabaseServer
+        .from("send_jobs")
+        .insert({
+          user_id: userId,
+          contact_ids: dedupedContactIds,
+          message: message.trim(),
+          attachment: attachment || null,
+          status: "pending",
+          total_count: dedupedContactIds.length,
+          started_at: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (jobError) {
+        console.error("[Send Message API] Error creating fast-path send job:", jobError);
+        return NextResponse.json(
+          { error: "Failed to create background job", details: jobError.message },
+          { status: 500 }
+        );
+      }
+
+      console.log(`[Send Message API] Fast-path background job created: ${sendJob.id} (deduped count: ${dedupedContactIds.length})`);
+
+      // Fire-and-forget trigger; cron will also pick it up
+      try {
+        let triggerUrl = 'http://localhost:3000';
+        if (process.env.NEXTAUTH_URL) {
+          triggerUrl = process.env.NEXTAUTH_URL;
+        } else if (process.env.VERCEL_URL) {
+          triggerUrl = `https://${process.env.VERCEL_URL}`;
+        }
+        triggerUrl = `${triggerUrl}/api/facebook/messages/process-send-job`;
+
+        fetch(triggerUrl, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jobId: sendJob.id,
+            accessToken: (session as any).accessToken
+          }),
+          signal: AbortSignal.timeout(5000)
+        }).then(response => {
+          if (!response.ok) {
+            console.warn(`[Send Message API] Fast-path trigger returned ${response.status}, cron will resume job if needed`);
+          }
+        }).catch(err => {
+          console.warn(`[Send Message API] Fast-path trigger failed (${err.message}), cron will resume job`);
+        });
+      } catch (triggerError: any) {
+        console.warn(`[Send Message API] Fast-path trigger exception: ${triggerError.message}, cron will resume job`);
+      }
+
+      return NextResponse.json({
+        success: true,
+        results: {
+          total: dedupedContactIds.length,
+          sent: 0,
+          failed: 0,
+          errors: [],
+          scheduled: false,
+          backgroundJob: true,
+          jobId: sendJob.id,
+          message: `Large batch detected (${dedupedContactIds.length} contacts). Job created and processing will start immediately. For huge sends (50k-100k), allow time for multiple cron runs.`
+        }
+      });
+    }
 
     // The frontend uses contact_id as the id, so we need to query by contact_id
     // But we also need page_id to uniquely identify contacts
@@ -775,4 +854,3 @@ export async function POST(request: NextRequest) {
     }
   }
 }
-

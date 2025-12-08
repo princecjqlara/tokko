@@ -32,8 +32,21 @@ type ContactRecord = {
 
 const MESSAGE_SEND_THROTTLE_MS = 50; // rate limit between sends (increased from 100ms for faster processing)
 const ATTACHMENT_THROTTLE_MS = 300; // give media a moment to settle (reduced from 500ms)
-const PAGE_CHUNK_SIZE = 150; // smaller chunks mean more frequent checkpoints and less duplicate risk on restarts
+const DEFAULT_PAGE_CHUNK_SIZE = 150;
+const PAGE_CHUNK_SIZE = Math.max(
+  25,
+  Number(process.env.SEND_JOB_PAGE_CHUNK_SIZE || DEFAULT_PAGE_CHUNK_SIZE)
+); // smaller chunks mean more frequent checkpoints and less duplicate risk on restarts
 const TIMEOUT_BUFFER_MS = 15000; // stop ~15s before the Vercel limit so we can persist progress safely
+const DEFAULT_MAX_RUNTIME_MS = 280000; // 280s (4m40s) - 20s buffer for Pro plan
+const RUNTIME_ENV_VALUE = Number(process.env.SEND_JOB_MAX_RUNTIME_MS);
+const MAX_RUNTIME_MS = Math.max(
+  5000, // ensure we always allow some processing window
+  Math.min(
+    Number.isFinite(RUNTIME_ENV_VALUE) && RUNTIME_ENV_VALUE > 0 ? RUNTIME_ENV_VALUE : DEFAULT_MAX_RUNTIME_MS,
+    DEFAULT_MAX_RUNTIME_MS
+  )
+); // allow override for Hobby (10s) via env SEND_JOB_MAX_RUNTIME_MS
 
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 
@@ -659,7 +672,9 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
     // Filter out metadata entries from errors, keep only actual errors
     const messageErrors: any[] = (sendJob.errors || []).filter((e: any) => !e._metadata);
     const startTime = Date.now();
-    const VERCEL_TIMEOUT = 280000; // 280 seconds buffer
+    const VERCEL_TIMEOUT = MAX_RUNTIME_MS;
+    const timeoutBuffer = Math.min(TIMEOUT_BUFFER_MS, Math.floor(VERCEL_TIMEOUT * 0.2));
+    const timeoutCutoff = Math.max(1000, VERCEL_TIMEOUT - timeoutBuffer);
 
     // Track which contacts have been sent (to prevent duplicates on resume)
     // Initialize with already sent contacts
@@ -695,7 +710,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
           return;
         }
 
-        if (elapsed > VERCEL_TIMEOUT - TIMEOUT_BUFFER_MS) {
+        if (elapsed > timeoutCutoff) {
           const sentContactIdsArray = Array.from(sentContactIds);
           const actualErrors = messageErrors.filter((e: any) => !e._metadata);
           const errorsWithMetadata = [
@@ -775,7 +790,7 @@ async function processSendJob(sendJob: SendJobRecord, userAccessToken: string | 
         // Update progress after each chunk (important for resume on huge pages)
         const sentContactIdsArray = Array.from(sentContactIds);
         const actualErrors = messageErrors.filter((e: any) => !e._metadata);
-        const nearTimeout = (Date.now() - startTime) > VERCEL_TIMEOUT - TIMEOUT_BUFFER_MS && chunkIndex < pageChunks.length - 1;
+        const nearTimeout = (Date.now() - startTime) > timeoutCutoff && chunkIndex < pageChunks.length - 1;
         const metadataEntry: any = {
           _metadata: {
             sent_contact_ids: sentContactIdsArray,
