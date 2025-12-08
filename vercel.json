@@ -1,2 +1,8 @@
 {
+  "crons": [
+    {
+      "path": "/api/facebook/messages/process-send-job",
+      "schedule": "*/2 * * * *"
+    }
+  ]
 }

@@ -118,10 +118,13 @@ export async function POST(request: NextRequest) {
 
     console.log("[Send Message API] Fetching contacts with IDs:", contactIds);
 
-    // FAST PATH: For very large batches, immediately create a background job without prefetching contacts
-    // Prefetching 5k+ contacts can exceed function time limits; the job processor will fetch in chunks anyway.
-    if (!scheduleDate && contactIds.length > LARGE_SEND_FAST_PATH_THRESHOLD) {
-      console.log(`[Send Message API] Fast-path enabled for large batch (${contactIds.length} contacts > ${LARGE_SEND_FAST_PATH_THRESHOLD}). Creating background job without prefetch.`);
+    // For medium and large batches, immediately create a background job to avoid request timeouts
+    const shouldUseBackgroundJob = !scheduleDate && contactIds.length > BACKGROUND_JOB_THRESHOLD;
+
+    if (shouldUseBackgroundJob) {
+      // Extremely large sends still go through the same path; we just adjust the log copy
+      const mode = contactIds.length > LARGE_SEND_FAST_PATH_THRESHOLD ? "FAST-PATH" : "STANDARD";
+      console.log(`[Send Message API] ${mode} background job enabled for batch of ${contactIds.length} contacts (threshold: ${BACKGROUND_JOB_THRESHOLD}, fast path: ${LARGE_SEND_FAST_PATH_THRESHOLD}). Creating job without prefetch.`);
 
       const dedupedContactIds = Array.from(new Set(contactIds));
 
@@ -140,14 +143,14 @@ export async function POST(request: NextRequest) {
         .single();
 
       if (jobError) {
-        console.error("[Send Message API] Error creating fast-path send job:", jobError);
+        console.error("[Send Message API] Error creating background send job:", jobError);
         return NextResponse.json(
           { error: "Failed to create background job", details: jobError.message },
           { status: 500 }
         );
       }
 
-      console.log(`[Send Message API] Fast-path background job created: ${sendJob.id} (deduped count: ${dedupedContactIds.length})`);
+      console.log(`[Send Message API] Background job created: ${sendJob.id} (deduped count: ${dedupedContactIds.length})`);
 
       // Fire-and-forget trigger; cron will also pick it up
       try {
@@ -169,13 +172,13 @@ export async function POST(request: NextRequest) {
           signal: AbortSignal.timeout(5000)
         }).then(response => {
           if (!response.ok) {
-            console.warn(`[Send Message API] Fast-path trigger returned ${response.status}, cron will resume job if needed`);
+            console.warn(`[Send Message API] Background trigger returned ${response.status}, cron will resume job if needed`);
           }
         }).catch(err => {
-          console.warn(`[Send Message API] Fast-path trigger failed (${err.message}), cron will resume job`);
+          console.warn(`[Send Message API] Background trigger failed (${err.message}), cron will resume job`);
         });
       } catch (triggerError: any) {
-        console.warn(`[Send Message API] Fast-path trigger exception: ${triggerError.message}, cron will resume job`);
+        console.warn(`[Send Message API] Background trigger exception: ${triggerError.message}, cron will resume job`);
       }
 
       return NextResponse.json({
@@ -188,7 +191,7 @@ export async function POST(request: NextRequest) {
           scheduled: false,
           backgroundJob: true,
           jobId: sendJob.id,
-          message: `Large batch detected (${dedupedContactIds.length} contacts). Job created and processing will start immediately. For huge sends (50k-100k), allow time for multiple cron runs.`
+          message: `Batch detected (${dedupedContactIds.length} contacts). Job created and processing will start immediately. For huge sends (50k-100k), allow time for multiple cron runs.`
         }
       });
     }
@@ -380,8 +383,8 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    // NOTE: Background job creation removed to prevent duplicate sends
-    // All batches now use direct send (with 5-minute Vercel Pro timeout)
+    // Batches above BACKGROUND_JOB_THRESHOLD already bail out to background jobs to avoid timeouts
+    // Remaining sends are handled inline below (small batches or scheduled messages)
 
 
     // If scheduleDate is provided, store the message for later instead of sending immediately
